@@ -1,7 +1,2 @@
-test pull
-
-and test push again
-
-
-why is this not working!!????????????
+Re-do of a college project this time using python
 
