@@ -11,10 +11,11 @@ Goals for this project:
 1. Re-write the GUI using something simpler than C++ with QT such as Java Swing or Python tkinter
 
 Developemnt steps:
- - Open video source (webcam) and save to disk - done
- - Make sure locking the screen doesn't stop recording as the PC will need to be left on always so screen will be locked - done
-    -  ~~done using a service with win32service~~ - changed to just using a subprocess, seems to still record on screen lock, no need for a service
- - Make a simple GUI to start / stop the recording - done
+ - done - Open video source (webcam) and save to disk - done
+ - done -Make sure locking the screen doesn't stop recording as the PC will need to be left on always so screen will be locked - done
+    - ~~done using a service with win32service~~
+    - changed to just using a subprocess, seems to still record on screen lock, no need for a service
+ - done -Make a simple GUI to start / stop the recording - done
  - Stream the recordings for live viewing as well as saving to disk (local live viewing first remote live vewing next)
  - Enable the stream to be viewed remotly, directly... ie. P2P
  - Enable the stream to be pushed to a server in a case where P2P is not possible (also allows a set of cloud back ups if the user machine fails)

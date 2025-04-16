@@ -18,6 +18,8 @@ try:
 
     print("Camera initialized successfully.")
 
+
+
     # Initialize video writer and timestamp
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
 
@@ -37,11 +39,32 @@ try:
                 print("Failed to capture frame.")
                 break
 
-        # Release the current video writer after 10 seconds and start a new file
+        # Release the current video writer after 10 seconds and start a new file with a new loop and new timestamp
         out.release()
         print(f"File {output_file} saved.")
 
     cap.release()
+
+
+# def show_camera_stream():
+#     cap = cv2.VideoCapture(0)
+
+#     if not cap.isOpened():
+#         print("Could not open webcam")
+#         return
+
+#     while True:
+#         ret, frame = cap.read()
+#         if not ret:
+#             break
+
+#         cv2.imshow("Live Camera Stream", frame)
+#         if cv2.waitKey(1) == 27:  # ESC key to exit stream
+#             break
+
+#     cap.release()
+#     cv2.destroyAllWindows()
+
 
 except Exception as e:
     # Log any errors
