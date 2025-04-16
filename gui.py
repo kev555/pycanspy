@@ -5,12 +5,8 @@ import sys
 import os
 import time
 
-
-
 # To List all servvices INCLUDING stopped ones in wondwos cli use:
 # wmic service get name,displayname,state | sort
-
-
 
 # Global variable to hold the subprocess for the recording
 recording_process = None
