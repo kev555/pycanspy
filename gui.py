@@ -5,6 +5,7 @@ import sys
 import os
 import time
 
+
 # To List all servvices INCLUDING stopped ones in wondwos cli use:
 # wmic service get name,displayname,state | sort
 
