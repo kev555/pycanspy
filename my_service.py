@@ -5,6 +5,7 @@ import win32service
 import win32serviceutil
 import record_cam  # Import your script
 
+
 class MyService(win32serviceutil.ServiceFramework):
     _svc_name_ = "ZZZMyPythonService"
     _svc_display_name_ = "My Python Background Service (5-Minute Run)"

@@ -4,6 +4,7 @@ import os
 import time
 import traceback
 
+
 try:
     # Set the output directory to Downloads > recordings
     output_dir = os.path.expanduser("C:/Users/kevw/Downloads/Recording from Webcam/recordings")
