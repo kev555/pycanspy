@@ -4,6 +4,7 @@ import os
 import time
 import traceback
 
+clip_intervals = 10
 
 try:
     # Set the output directory to Downloads > recordings
@@ -25,11 +26,10 @@ try:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = os.path.join(output_dir, f"webcam_{timestamp}.avi")
         out = cv2.VideoWriter(output_file, fourcc, 20.0, (640, 480))
-
-        start_time = time.time()  # Start time to track 10-second intervals
         
-        # Record for 10 seconds
-        while time.time() - start_time < 10:
+        # Record for x seconds
+        start_time = time.time()
+        while time.time() - start_time < clip_intervals:
             ret, frame = cap.read()
             if ret:
                 out.write(frame)
