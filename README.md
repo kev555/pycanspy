@@ -12,8 +12,16 @@ Goals for this project:
 
 Developemnt steps:
  - Open video source (webcam) and save to disk - done
- - Make sure locking the screen doesn't stop recording as the PC will need to be left on always so screen will be locked.
-    - done using a service with win32service
- - Make a simple GUI to start / stop the recording
- - Stream the recordings to screen for live viewing (and later for remote live viewing)
+ - Make sure locking the screen doesn't stop recording as the PC will need to be left on always so screen will be locked - done
+    -  ~~done using a service with win32service~~ - changed to just using a subprocess, seems to still record on screen lock, no need for a service
+ - Make a simple GUI to start / stop the recording - done
+ - Stream the recordings for live viewing as well as saving to disk (local live viewing first remote live vewing next)
+ - Enable the stream to be viewed remotly, directly... ie. P2P
+ - Enable the stream to be pushed to a server in a case where P2P is not possible (also allows a set of cloud back ups if the user machine fails)
+ - Import the old C++ OpenCV code for motion detection and link it in or re-write the logic using Python's OpenCV library
+ - Then add the option to only record on motion detection, saving lots of space
+ - Add an alert method that can reach smartphone (email from the PC email client -> generic android alert app)
+
+ - Add more features to the Python GUI OR make the GUI web app (html, css, javascript) from the beginning so it can be loaded from any device,
+    Then the Python "GUI" simply function as a control server, taking messages from either local browser app or remote browser app interchangably
  - 
