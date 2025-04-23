@@ -1,21 +1,12 @@
-import os
 import subprocess
-import threading
 import time
 import sys
 import tkinter as tk
-
 
 pipe_name = r'\\.\pipe\recordcam_pipe'
 pipe_handler = None
 manage_camera_process = None
 GUI_window = None
-
-
-# def read_output(stream, label):
-#     for line in iter(stream.readline, b''):
-#         print(f"[{label}] {line.decode().strip()}")
-#     stream.close()
 
 # Send a command to manage_camera.py - need to make this async so it doesn lock GUI up
 def send_command(command):
@@ -28,24 +19,15 @@ def send_command(command):
             try:
                 manage_camera_process = subprocess.Popen(
                     ["python", "-u", "manage_camera.py"],
-                    # stdout=subprocess.PIPE,
-                    # stderr=subprocess.PIPE,
-                    # These redirect manage_camera.py's output back to this script
-                    # so it could be processed programmatically here instead of printing to the terminal.
-                    # not necessary yet and making debugging manage_camera.py difficult, comment out for now
-
-                    # *ACTUALLY* - This was blocking the subprocess while it waited for control of the terminal (STDOUT)
-                    # So re-enable them, but use a seperate thread(s) for their output:
-                    #stdout=subprocess.PIPE,
-                    #stderr=subprocess.PIPE,
+                    
+                    # These redirect manage_camera.py's output back to this script's output
+                    # *this is not designed for passing importing information in the sense of a named pipe
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
 
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 )
 
-                # Start threads to read subprocess output
-                #threading.Thread(target=read_output, args=( manage_camera_process.stdout, "STDOUT"), daemon=True).start()
-                #threading.Thread(target=read_output, args=( manage_camera_process.stderr, "STDERR"), daemon=True).start()
-                
                 print("Started manage_camera.py")
             except Exception as e:
                 print(f"Failed to start manage_camera.py subprocess: {e}")
@@ -53,27 +35,10 @@ def send_command(command):
                 time.sleep(2)
                 return
         
-
-        # !!!!!!! os.path.exists only works on linux / unix , so none of this will work !!!!!!!
-        # Check the pipe exists, check 7 times with 1 seconds delays, in case manage_camera needs time to start up
-        # print("Checking for manage_camera.py's pipe")
-        # retries = 7
-        # for attempt in range(retries):
-        #     try:
-        #         if not os.path.exists(pipe_name):
-        #             print( f"Pipe {pipe_name} not found. Attempt {attempt + 1}/{retries}" )
-        #             time.sleep(1)
-        #         elif os.path.exists(pipe_name):
-        #             print("pipe created so jump out")
-        #             break
-        #     except Exception as e:
-        #         print(f"Retries exhausted - manage_camera.py has not created the pipe: {e}")
-        #         return
-        
-        
+        # os.path.exists was previously check here but it only works on linux / unix , not windows, so just try to open the pipe directly
 
         # Try to open the pipe
-        if pipe_handler is None or pipe_handler.closed:       # (pipe_handler.closed is a built in boolean "read-only property" (aka. an "attribute"))
+        if pipe_handler is None or pipe_handler.closed:  # (pipe_handler.closed is a built in boolean "read-only property" (aka. an "attribute"))
             retries = 5
             for attempt in range(retries):
                 try:
@@ -102,7 +67,6 @@ def send_command(command):
 
 # end function
 
-
 # GUI functions:
 def start_recording():
     send_command("start_record")
@@ -129,10 +93,6 @@ def on_exit():
             if manage_camera_process.poll() is not None:
                 print("Subprocess terminated.")
                 break # break from for loop (return would break from the whole function...)
-        # end for
-        # if manage_camera_process.poll() is None:  # again - None means running
-        #     print("Failed to send the exit command after 3 attempts, force terminating subprocess...")
-        #     manage_camera_process.terminate()
     else:
         print("No Subprocess created yet or all have been closed.")
     

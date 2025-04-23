@@ -91,9 +91,7 @@ def camera_control_and_loop():
         print("[SP:] Opened webcam.")
     
     while camera_in_use:
-        #print("[SP:] 111111111")
         if exit_button_pressed:
-            #print("[SP:] 222222")
             clean_camera()
             camera_in_use = False
             process_running = False # will force the _main_ while loop to exit and thus program end, must break camera_control_and_loop first
@@ -105,17 +103,14 @@ def camera_control_and_loop():
             break
 
         if recording:
-            #print("[SP:] 333333")
             writer.write(frame)
         
         if show_stream:
-            #print("[SP:] 444444")
             cv2.imshow("Live", frame)
             if cv2.waitKey(1) == 27:
                 break
         
         if not recording and not show_stream:   # camera not in use so close it to save resources
-            #print("[SP:] 555555")
             clean_camera()
             camera_in_use = False
             break
