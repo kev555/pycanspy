@@ -16,10 +16,10 @@ However I didn't get the webapp connected to the windows gui application properl
 **Development steps:**  
 - [x] Open video source (webcam) and save to disk  
 - [x] Make sure locking the screen doesn't stop recording, so screen can be locked and still secure 
-    - ~~done using a service with win32service~~  
-    - changed to just using a subprocess, seems to still record on screen lock, no need for a service  
+    - ~~done using a service with the win32service module~~
+    - changed to just using a python "subprocess", seems to still record on screen lock, no need for a service  
 - [x] Make a simple GUI to start / stop the recording  
-- [ ] Create a stream for live viewing as well as saving to disk (local live viewing first, remote live viewing next)  
+- [x] Create a stream for live viewing as well as saving to disk (local live viewing first, remote live viewing next)  
     - This now means no more saving the video from the camera directly, as it's needed for multiple output paths now — disk and screen  
 - [ ] Enable the stream to be also viewed remotely in P2P way  
 - [ ] Enable the stream to be pushed to a server in case P2P is not possible due to NAT or other restrictions (also allows a set of cloud backups if the user machine fails)  
@@ -27,4 +27,4 @@ However I didn't get the webapp connected to the windows gui application properl
 - [ ] Then add the option to only record on motion detection, saving lots of space  
 - [ ] Add an alert method that can reach smartphone (email from the PC email client → generic Android alert app)  
 - [ ] Add more features to the Python GUI OR make the GUI web app (HTML, CSS, JavaScript) from the beginning so it can be loaded from any device  
-    .. Then the Python "GUI" simply functions as a control server, taking messages from either local browser app or remote browser app interchangeably  
+    .. Then the Python "GUI" simply functions as a control server, taking messages from either local browser app or remote browser app interchangeably
