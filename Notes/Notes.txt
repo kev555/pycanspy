@@ -237,7 +237,82 @@ No threads are involved nor would they help in creating the new process any fast
 If you want to use threads, you can, or you could use asyncio. Your choice"
 
 So I will not use subprocess anymore.
-Or... I could have the GUI and the camera managment as seperate processes
+Or... I could have the GUI and the camera management as seperate processes
 the GUI process would use Unix sockets or "named pipes" (on windows) to message the camera managment process
 the camera managment process could also take direct messages from: a remote device (via a socket), a local webapp (again via a socket)
 
+
+
+Additional Notes on, scope stuff in python vs JS:
+Scope in Python and JavaScript:
+In Python, variables are local to a function unless declared as global or nonlocal.
+In JavaScript, var, let, and const have different scope behaviors, but all of them respect their enclosing scope when functions are defined within them.
+
+Global and Nonlocal in Python:
+global: Used to modify global variables from inside a function.
+nonlocal: Used to modify variables from an enclosing (but not global) scope.
+
+Classes and Functions in Python:
+In Python, functions can be defined inside classes, and methods within classes typically access the class attributes through self.
+Unlike JavaScript, Python doesn't allow functions to be directly added as properties to an object without using a class.
+
+Lambda Functions:
+Lambda functions in Python are a way to define anonymous functions, similar to JavaScript's anonymous functions. They can access variables from their enclosing scope.
+
+JavaScript Object Methods:
+JavaScript allows functions to be directly added to objects (e.g., obj.myfunc), where this refers to the object itself.
+
+Functions Inside Objects in Python:
+Python doesn't support defining functions directly inside dictionaries in the same way JavaScript does, because Python doesn't automatically bind the function to the object's context (self in classes).
+You can use lambda in Python to define functions that access variables from their parent scope, but using nonlocal would not work in this case for nested dictionary definitions.
+
+Scope Chain Behavior:
+this in JavaScript refers to the object the function is part of and behaves differently depending on where the function is called.
+Python doesn't have an equivalent to this and instead uses self inside class methods to refer to the instance of the class.
+
+
+
+Understanding sockets terminology and standards (as the similar terms are confusing so full explanation):
+
+A Berkeley (aka BSD) socket API:
+For Network communication: defines the "Internet domain sockets" definition. Uses IPv4/IPv6. Only usable over networks that utilize those protocols e.g. the Internet!
+For IPC communication: defines the "Unix domain sockets" definition. Does NOT use network protocols like IPv4/IPv6. Only for unix-like systems (Linux, macOS, etc.) 
+ - Modern Berkeley Network sockets (aka. "Internet domain sockets") and IPC sockets (aka. "Unix domain sockets") adhere to POSIX standards ()"POSIX-compliant sockets")
+ - Both use the term "sockets", which can be confusing. Also sometimes referred to as "Berkeley" "BSD" sockets. 
+
+Winsock aka Windows Sockets API:
+For Network communication, defines the term "sockets", but used specificilly to describe network sockets. Also IPv4/IPv6....
+For IPC communication, Windows does not use e.g, "Windows domain sockets". Instead, it uses "Named Pipes"
+ - Winsock API is actually based on Berkeley Sockets API, but is NOT POSIX-compliant
+ - Around 2017, Microsoft added limited support for Unix domain sockets in Windows (AF_UNIX), but it's not widely used or feature-complete.
+
+*POSIX compliance means the API behaves in a predictable and portable way across POSIX-compliant systems (e.g., Linux, BSD, macOS).
+
+When network sockets from either API use IPv4 or IPv6, they are denoted as AF_INET and AF_INET6 sockets respectfully (PF_INET and PF_INET6 in some legacy code).
+Linux IPC uses Unix domain sockets , they are designated as AF_UNIX (or PF_UNIX in legacy code)
+Windows IPC use Named Pipes so don't have a designated address family like AF_UNIX. Just specify with a pipe name: \\.\pipe\
+
+When network sockets from either API use TCP they are denoted by socket type constant "SOCK_STREAM". For UDP it's "SOCK_DGRAM".
+
+* IPC methods ("Unix domain sockets" or Windows "Named Pipes") can also be denoted "SOCK_STREAM" or "SOCK_DGRAM", 
+  as here it's refering to the communication "semantics" of the socket (stream vs. datagram), not the underlying protocol (TCP, UDP)
+
+
+Demo of minimal code necessary to create an IPv4 TCP socket in Python, Linux (Berkeley Sockets API), and Windows (Winsock API).
+Python:
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+Linux / Unix (Berkeley Sockets API):
+#include <sys/socket.h>  // For socket creation and communication
+#include <netinet/in.h>  // For defining the socket address structure and constants
+int sockfd;
+sockfd = socket(AF_INET, SOCK_STREAM, 0);  // Create TCP socket
+
+Windows (Winsock API):
+#include <winsock2.h>
+#pragma comment(lib, "ws2_32.lib")  // Link against Winsock library
+WSADATA wsaData;
+SOCKET sockfd;
+WSAStartup(MAKEWORD(2, 2), &wsaData);  // Initialize Winsock
+sockfd = socket(AF_INET, SOCK_STREAM, 0);  // Create TCP socket
