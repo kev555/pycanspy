@@ -3,69 +3,100 @@ import time
 import sys
 import tkinter as tk
 
-pipe_name = r'\\.\pipe\recordcam_pipe'
-pipe_handler = None
+import socket
+
 manage_camera_process = None
 GUI_window = None
 
+# socket stuff
+host = '127.0.0.1'  # or 'localhost'
+port = 5000         # any free port
+client_socket = None
+
 # Send a command to manage_camera.py - need to make this async so it doesn lock GUI up
 def send_command(command):
-    try:
-        global manage_camera_process, pipe_handler, pipe_name
+    global client_socket
+    global manage_camera_process 
+    global host, port
 
+    try:
+        # Start set up Subprocess
         if manage_camera_process is None or manage_camera_process.poll() is not None:  
             # There is no subprocess object OR the process is dead (.poll() returns None if running or the exit code if not)
             print("Starting manage_camera.py subprocess...")
             try:
-                manage_camera_process = subprocess.Popen(
+                manage_camera_process = subprocess.Popen(  # spin off a new process, no waiting for confirmation that it started successfully or anything
                     ["python", "-u", "manage_camera.py"],
-                    
-                    # These redirect manage_camera.py's output back to this script's output
-                    # *this is not designed for passing importing information in the sense of a named pipe
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                    #stdout=subprocess.PIPE,
+                    #stderr=subprocess.PIPE,
+                    #creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                    # tells operating system to groups manage_camera.py and any processes it subsequently spawns. 
+                    # helps to terminate all subprocess - spawned processes once the subprocess is killed.. apparently 
+                    # (not clear if this works well on windows or if subprocess_object.kill() even triggers what CREATE_NEW_PROCESS_GROUP sets...?)
                 )
-
                 print("Started manage_camera.py")
             except Exception as e:
                 print(f"Failed to start manage_camera.py subprocess: {e}")
-
-                time.sleep(2)
+                time.sleep(1)
                 return
+        # Finish set up Subprocess
         
-        # os.path.exists was previously check here but it only works on linux / unix , not windows, so just try to open the pipe directly
+        # os.path.exists was a pre check also here previously, but it only works on linux / unix , not windows, so just try to open the pipe directly
 
-        # Try to open the pipe
-        if pipe_handler is None or pipe_handler.closed:  # (pipe_handler.closed is a built in boolean "read-only property" (aka. an "attribute"))
-            retries = 5
-            for attempt in range(retries):
+        # Try to open to the socket
+        if client_socket is None:                                               # socket doesnt exist
+            print("Opening socket...")
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)   # try to create it
+
+        if client_socket.fileno() == -1:                                        # socket was closed?
+            print("Socket was closed... creating a new one...")
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)   # a closed socket is a dead socket, need to create a new one
+        
+        if client_socket is None or client_socket.fileno() == -1:               # check if opened now
+            print ("Could not create a socket")
+            return
+        else:
+            print("Socket is open")
+
+        # Check if socket is already connected
+        max_connect_retries = 5
+        try:
+            client_socket.getpeername() # client_socket.getpeername() attempts to return the address of the remote socket, raises OSError if socket not connected
+            print("Socket is already connected.")
+        except OSError:
+            # Not connected, attempt connection
+            for attempt in range(max_connect_retries):
                 try:
-                    pipe_handler = open(pipe_name, 'w')
-                    print("Pipe opened and ready for writing.")
-                    break  # exit the for loop
+                    client_socket.connect((host, port)) # ConnectionRefusedError if not working
+                    print(f"Connected to socket on attempt {attempt+1}")
+                    try:
+                        print("getsockname() from guiiiiiiiii:", client_socket.getsockname())
+                    except Exception as e:
+                        print(f"guiiiiiiiii {e}")
+                    break
                 except Exception as e:
-                    print(f"Failed to open pipe (attempt {attempt+1}): {e}")
+                    print(f"Connection attempt {attempt+1} failed: {e}")
                     time.sleep(1)
             else:
-                raise Exception(f"Failed to open the pipe after {retries} attempts.")
+                raise Exception(
+                    f"Failed to connect after {max_connect_retries} attempts.")
         
-        # Try to send a message through the Pipe
-        retries = 3
-        for attempt in range(retries):
+        # Try to send the command through socket
+        max_send_retries = 3
+        for attempt in range(max_send_retries):
             try:
-                pipe_handler.write(command + '\n')
-                pipe_handler.flush()
-                print(f"Command '{command}' sent to manage_camera.py")
-                return  # exit the send_command function completly (not break !!)
+                client_socket.sendall((command + '\n').encode())
+                print(f"Command '{command}' sent to subprocess")
+                break
             except Exception as e:
-                print(f"Failed to send command (attempt {attempt+1}): {e}")
-    
-    except: # catch every type of exception
-        print("Problem starting the camera process, finding the pipe, or sending a command")
+                print(f"Send attempt {attempt+1} failed: {e}")
+                time.sleep(1)
+        else:
+            raise Exception(
+                f"Failed to send command after {max_send_retries} attempts.")
 
-# end function
+    except:  # catch every type of exception
+        print("Problem starting the camera process, finding the socket, or sending a command")
 
 # GUI functions:
 def start_recording():
@@ -73,15 +104,15 @@ def start_recording():
 def stop_recording():
     send_command("stop_record")
 def start_showing():
-    send_command("show_stream")
+    send_command("€")
 def stop_showing():
     send_command("hide_stream")
 
 def on_exit():
-    print("GUI closed. Stopping subprocesses and closing pipe")
+    print("GUI closed. Stopping subprocesses and closing socket")
     # probably a good idea to notify the user too, just "shutting down..." as this may take a couple of seconds to gracefully shut down everything
 
-    global manage_camera_process, pipe_handler, GUI_window
+    global manage_camera_process, client_socket, GUI_window
     
     # Send the exit command, if process is still running
     if manage_camera_process and manage_camera_process.poll() is None:  # again - None means running
@@ -89,37 +120,44 @@ def on_exit():
         print("Sent exit command to subprocess")
         for _ in range(3):
             print("Checking if subprocess exited")
-            time.sleep(3)
+            time.sleep(1)
             if manage_camera_process.poll() is not None:
                 print("Subprocess terminated.")
                 break # break from for loop (return would break from the whole function...)
+            else:
+                print ("couldn't close sub process, trying again")
+        if manage_camera_process.poll() is  None: # Still running after 5 seconds - kill manually!
+            print("Subprocess didn't exit by itself, killing manually")
+            manage_camera_process.kill()
+
     else:
         print("No Subprocess created yet or all have been closed.")
     
-    # Try to close the Pipe if it's still open
-    if pipe_handler and not pipe_handler.closed:
-        try:
-            pipe_handler.close()
-            if pipe_handler.closed:
-                print("pipe closed!")
-            else:
-                print("pipe cant be closed!!!!!")
-
-        except Exception as e:
-            print(f"error closing the pipe: {e}")
     
+    # Try to close the socket if it's still open
+    if client_socket and not client_socket.fileno() == -1: # "client_socket exitis but is not closed"
+        print("huhhhhhh555555555555", client_socket)
+        try:
+            client_socket.shutdown(socket.SHUT_RDWR)  # Gracefully shut down both directions
+            if client_socket.fileno() == -1:
+                print("socket closed!")
+            else:
+                print("socket can't be closed!!!!!")
+        except Exception as e:
+            print(f"error closing the socket: {e}")
+
     GUI_window.destroy() # End the GUI's main loop
 
 # GUI setup
 def gui_setup():
 
-    print("setting up gui")
+    #print("setting up gui")
 
     global GUI_window
     GUI_window = tk.Tk()
     GUI_window.title("Camera Control")
 
-    print("gui has been set up")
+    #print("gui has been set up")
 
     # Buttons
     record_button = tk.Button(
