@@ -52,8 +52,8 @@ def handle_commands():
 
             # "accept() -> (socket object, address info)" # "plain-language description" of what the method socket.accept() returns, not very useful info...
             # "(method) def accept() -> tuple[socket, _RetAddress]" # more useful description
-            print("conn", type(conn), conn.getsockname()) # <class 'socket.socket'>
-            print("addr", type(addr), addr)  # <class 'tuple'>)  ("IP_address" as a string + port as an int))
+            #print("conn", type(conn), conn.getsockname()) # <class 'socket.socket'>
+            #print("addr", type(addr), addr)  # <class 'tuple'>)  ("IP_address" as a string + port as an int))
             
             # https://docs.python.org/3/library/socket.html#socket.socket.accept
             # conn is a new socket object usable to send and receive data on the connection, 
@@ -88,15 +88,15 @@ def handle_commands():
         while process_running:
             # Main process
             try:
-                #print("[SP:] Waiting here for a command...")
+                print("[SP:] Waiting here for a command...")
                 data = conn.recv(65536)  # <- blocking, recv = "receive", app will just hang here until a command or exit is recieved
                 print("Raw bytes: ", data)
                 if not data:                
-                    #print("[SP:] No data, connection closed by client)
+                    print("[SP:] No data, connection closed by client")
                     break
                 #print(f"[SP:] Command received: {data}") # ?
                 cmd = data.decode().strip()
-                print("UTF-8 decoded bytes:", cmd)
+                #print("UTF-8 decoded bytes:", cmd)
 
                 # NOTES:
                 # With a TCP socket, a client signals termination by sending a TCP packet with a FIN flag (single bit, 1 or 0) and an empty payload
@@ -110,6 +110,7 @@ def handle_commands():
 
                 # control logic:  !! make this separate function
                 if cmd == "show_stream":
+                    print("[SP:] !!!!!!!!!!!!!!!!!!!333333333333333...")
                     show_stream = True
                     camera_in_use = True        # Turn the camera loop on after setting things up here
                 elif cmd == "hide_stream":
@@ -144,10 +145,10 @@ def cam_frame_loop():
     global writer, camera_in_use, exit_button_pressed, process_running, cap
     global host, port, conn, server_socket
     print("[SP:] Opening webcam.")
+
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     # adding cv2.CAP_DSHOW here make the camera open 5x faster ... 
     # i dont know why this worked found here: https://answers.opencv.org/question/215586/why-does-videocapture1-take-so-long/
-    
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
         print("[SP:] Could not open webcam.")
         return
