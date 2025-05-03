@@ -43,7 +43,7 @@ def handle_commands():
         server_socket.bind((host, port)) # bind to the socket
         server_socket.listen(1)  # listen to the socket, single connection; can be expanded
 
-        print("server_socket.getsocknam:::", server_socket.getsockname())
+        print("server_socket.getsockname:::", server_socket.getsockname())
 
         try:
             print("[SP:] Waiting for GUI to connect to socket...")
@@ -60,19 +60,19 @@ def handle_commands():
             # address is the address bound to the socket on the other end of the connection
 
             # So this means .accept() has already done the TCP handshake and has gathered the IP address and
-            # temporary port (epherial temporary port) that the client will use for the TCP connection on it's side
+            # temporary port (ephemeral temporary port) that the client will use for the TCP connection on it's side
             # and stores this all in a newly created socket - "conn". It creates a new socket object why?:
             # to allow one "server_socket" socket object as a master, then as additional clients attempt to establish a connection
             # just spawn new socket objects with that connection already set up. 
             # 
             # While these TCP connections are still alive the conn object can keep communicating with the client.
             # These object dont need to like go through the original server or anything or even use a different port, how?
-            # any packets coming from that client address + client epherial port,
+            # any packets coming from that client address + client ephemeral port,
             #  the OS will be able to use this to route the packets directly to the correct object based on what object has that _RetAddress
             # client_socket.getpeername() will show the conn objects's (client_ip, client_port)
-            # - this process will know excatly what conn object that packet was meant for
+            # - this process will know exactly what conn object that packet was meant for
             # 
-            # HOW excatly do the packets get from the OS to a specific object in a process:
+            # HOW exactly do the packets get from the OS to a specific object in a process:
             # The OS maintains a mapping between each socket file descriptor(an integer) and the corresponding kernel-level socket object. 
             # When network data arrives for a specific connection, 
             # the OS uses the connection’s identifying information(the four-tuple of source IP, source port, destination IP, and destination port) 
@@ -102,7 +102,7 @@ def handle_commands():
                 # With a TCP socket, a client signals termination by sending a TCP packet with a FIN flag (single bit, 1 or 0) and an empty payload
                 # The C library and thus Python reads the payload in Bytes and passes it to the application when recv() is called
                 # So "data" will be a  python bytes object (you'll see: b'' if printed)
-                # If the message was "Hello" you'd see b'Hello', Python's print() auto deocdes ASCII range characters (0-127)
+                # If the message was "Hello" you'd see b'Hello', Python's print() auto decodes ASCII range characters (0-127)
                 # If the message was € you'd see b'\xe2\x82\xac' (bytes as Hex) until cmd = data.decode() is called 
                 # (.decode() default is UTF-8, which is what most clients will be sending anyway!), 
                 # see note Bytes_UFT_encoding_etc.txt for deeper info on bytes and UTF encoding
@@ -116,9 +116,10 @@ def handle_commands():
                     show_stream = False
                 elif cmd == "start_record":
                     if writer is None:
-                        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                        fourcc = cv2.VideoWriter_fourcc(*'XVID') 
                         writer = cv2.VideoWriter("output.avi", fourcc, 20.0, (640, 480))
-                    recording=True
+                        # as this function is threaded (asynchronous), these operations will not block cam_frame_loop
+                    recording=True              # now it will record on the next loop
                     camera_in_use = True        # Turn the camera loop on after setting things up here
                 elif cmd == "stop_record":
                     if writer:
@@ -127,7 +128,7 @@ def handle_commands():
                     recording=False
                 elif cmd == "exit":
                     #print("[SP:] Exiting...")
-                    exit_button_pressed = True  # i think more graceful to exit from the inside camera_control_and_loop, instead of just killing it from here
+                    exit_button_pressed = True  # i think more graceful to exit from the inside cam_frame_loop, instead of just killing it from here
                     return                      # jump out so as not to wait for another command
                 cmd = "noting new"
             except ConnectionResetError:
@@ -138,12 +139,10 @@ def handle_commands():
                 break
         print ("SUB process finished")
 
-def camera_control_and_loop():
-    # Runs once each time camera_in_use is triggered
+def cam_frame_loop():
+    # Init Runs once each time camera_in_use is triggered
     global writer, camera_in_use, exit_button_pressed, process_running, cap
     global host, port, conn, server_socket
-
-    
     print("[SP:] Opening webcam.")
     # adding cv2.CAP_DSHOW here make the camera open 5x faster ... 
     # i dont know why this worked found here: https://answers.opencv.org/question/215586/why-does-videocapture1-take-so-long/
@@ -159,7 +158,7 @@ def camera_control_and_loop():
         if exit_button_pressed:
             clean_camera()
             camera_in_use = False
-            process_running = False # will force the _main_ while loop to exit and thus program end, must break camera_control_and_loop first
+            process_running = False # will force the _main_ while loop to exit and thus program end, must break cam_frame_loop first
             return
 
         ret, frame = cap.read()  # read one frame constantly while camera in use
@@ -180,14 +179,13 @@ def camera_control_and_loop():
             camera_in_use = False
             break
 
-# This camera_control_and_loop function will only run again if if camera_in_use wasn't turned off (see main)
-# Next time camera_in_use turned on - a new cap object is generated at the top of camera_control_and_loop anyway
+# This cam_frame_loop function will only run again if if camera_in_use wasn't turned off (see main)
+# Next time camera_in_use turned on - a new cap object is generated at the top of cam_frame_loop anyway
 
 def clean_camera():
-    global host, port, conn, server_socket
+    global host, port, conn, server_socket, writer, cap
 
     #print("[SP:] Cleaning up")
-    global writer, cap
     
     # Try to release camera
     if cap:
@@ -219,7 +217,7 @@ if __name__ == "__main__":
     
     while process_running:
         if camera_in_use:
-            camera_control_and_loop()    # <- Blocking, camera must be turned off first or process_running loop can't end
+            cam_frame_loop()    # <- Blocking, camera must be turned off first or process_running loop can't end
         if exit_button_pressed:          # <- If exit pressed, process_running will also end, so kill the socket here just befre ending
             print("[SP:] Attempting to safely disconnecting the socket", conn)
             try:
