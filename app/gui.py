@@ -104,7 +104,7 @@ def start_recording():
 def stop_recording():
     send_command("stop_record")
 def start_showing():
-    send_command("start_show") # €
+    send_command("show_stream")  # €
 def stop_showing():
     send_command("hide_stream")
 
