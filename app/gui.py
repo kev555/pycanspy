@@ -104,7 +104,7 @@ def start_recording():
 def stop_recording():
     send_command("stop_record")
 def start_showing():
-    send_command("show_stream")  # €
+    send_command("show_stream")  # € to see raw bytes
 def stop_showing():
     send_command("hide_stream")
 
@@ -142,7 +142,7 @@ def on_exit():
             if client_socket.fileno() == -1:
                 print("socket closed!")
             else:
-                print("socket can't be closed!!!!!")
+                print("socket can't be closed, perhaps already closed by subprocess")
         except Exception as e:
             print(f"error closing the socket: {e}")
 

@@ -1,5 +1,35 @@
 import sys
 
+import cv2
+
+
+import time
+
+start_time = time.time()
+
+if writer is None:  # means new recording triggered - so create a new filename and 10-second segment
+    os.makedirs(output_dir, exist_ok=True)          
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True) 
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True) 
+    os.makedirs(output_dir, exist_ok=True)
+    start_time = time.time()
+    end_time = start_time + clip_interval_secs # unix time is in seconds so just add
+    fourcc = cv2.VideoWriter_fourcc(*'H264')  # fourcc = "4 character codec", * = unpack operator, chose H264 (best for web), returns 32bit int codec ID
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = os.path.join(output_dir, f"webcam_{timestamp}.mp4") # ".mp4 = use mp4 container"  (best for web)
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+            
+
+# print("sfdsdfsdf", cv2.getBuildInformation())
+
+
+fourcc = cv2.VideoWriter_fourcc(*'XVID')
+print(fourcc)
+
 
 # blah = 1
 
