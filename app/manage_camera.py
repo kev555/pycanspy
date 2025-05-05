@@ -1,7 +1,9 @@
 import cv2
 import threading
 import socket
-# import time
+import time
+import datetime
+import os
 
 # global controls
 process_running = True
@@ -13,7 +15,7 @@ exit_button_pressed = False
 # I'm just going to use these global controls and not try to be too clever
 # but these could be passed instead of being global...
 writer = None
-cap = None
+webcam_obj = None
 
 # socket stuff
 host = '127.0.0.1'  # or 'localhost'
@@ -21,6 +23,13 @@ port = 5000         # any free port
 
 conn = None
 server_socket = None
+
+script_directory = os.path.dirname(os.path.abspath(__file__))
+output_subdirectory = "webcam_recordings"
+output_dir = os.path.join(script_directory, output_subdirectory)
+os.makedirs(output_dir, exist_ok=True)
+
+clip_interval_secs = 5
 
 def handle_commands():
     # asynchronous, runs in it's own thread. could use signal.pthread_kill to terminate but better to use "shared flag" method - process_running boolean here, 
@@ -52,8 +61,8 @@ def handle_commands():
 
             # "accept() -> (socket object, address info)" # "plain-language description" of what the method socket.accept() returns, not very useful info...
             # "(method) def accept() -> tuple[socket, _RetAddress]" # more useful description
-            #print("conn", type(conn), conn.getsockname()) # <class 'socket.socket'>
-            #print("addr", type(addr), addr)  # <class 'tuple'>)  ("IP_address" as a string + port as an int))
+            print("conn", type(conn), conn.getsockname()) # <class 'socket.socket'>
+            print("addr", type(addr), addr)  # <class 'tuple'>)  ("IP_address" as a string + port as an int))
             
             # https://docs.python.org/3/library/socket.html#socket.socket.accept
             # conn is a new socket object usable to send and receive data on the connection, 
@@ -88,14 +97,16 @@ def handle_commands():
         while process_running:
             # Main process
             try:
-                print("[SP:] Waiting here for a command...")
+                #print("[SP:] Waiting here for a command...")
                 data = conn.recv(65536)  # <- blocking, recv = "receive", app will just hang here until a command or exit is recieved
-                print("Raw bytes: ", data)
+                #print("Raw bytes: ", data)
+                
                 if not data:                
-                    print("[SP:] No data, connection closed by client")
+                    #print("[SP:] No data, connection closed by client)
                     break
                 #print(f"[SP:] Command received: {data}") # ?
                 cmd = data.decode().strip()
+                
                 #print("UTF-8 decoded bytes:", cmd)
 
                 # NOTES:
@@ -110,23 +121,16 @@ def handle_commands():
 
                 # control logic:  !! make this separate function
                 if cmd == "show_stream":
-                    print("[SP:] !!!!!!!!!!!!!!!!!!!333333333333333...")
                     show_stream = True
                     camera_in_use = True        # Turn the camera loop on after setting things up here
                 elif cmd == "hide_stream":
                     show_stream = False
                 elif cmd == "start_record":
-                    if writer is None:
-                        fourcc = cv2.VideoWriter_fourcc(*'XVID') 
-                        writer = cv2.VideoWriter("output.avi", fourcc, 20.0, (640, 480))
                         # as this function is threaded (asynchronous), these operations will not block cam_frame_loop
                     recording=True              # now it will record on the next loop
                     camera_in_use = True        # Turn the camera loop on after setting things up here
                 elif cmd == "stop_record":
-                    if writer:
-                        writer.release()
-                        writer=None
-                    recording=False
+                    recording=False # don't release the cv writer here, causing problems, do it in loop
                 elif cmd == "exit":
                     #print("[SP:] Exiting...")
                     exit_button_pressed = True  # i think more graceful to exit from the inside cam_frame_loop, instead of just killing it from here
@@ -141,15 +145,17 @@ def handle_commands():
         print ("SUB process finished")
 
 def cam_frame_loop():
-    # Init Runs once each time camera_in_use is triggered
-    global writer, camera_in_use, exit_button_pressed, process_running, cap
-    global host, port, conn, server_socket
+    # Runs as long as camera_in_use is true. New webcam_obj etc generated upon each restart
+
+    global writer, camera_in_use, exit_button_pressed, process_running, webcam_obj
+    global host, port, conn, server_socket, show_stream, output_dir, clip_interval_secs
     print("[SP:] Opening webcam.")
 
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    # adding cv2.CAP_DSHOW here make the camera open 5x faster ... 
+    webcam_obj = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    # adding cv2.CAP_DSHOW here make the camera open 5x faster ...
     # i dont know why this worked found here: https://answers.opencv.org/question/215586/why-does-videocapture1-take-so-long/
-    if not cap.isOpened():
+
+    if not webcam_obj.isOpened():
         print("[SP:] Could not open webcam.")
         return
     else:
@@ -162,45 +168,59 @@ def cam_frame_loop():
             process_running = False # will force the _main_ while loop to exit and thus program end, must break cam_frame_loop first
             return
 
-        ret, frame = cap.read()  # read one frame constantly while camera in use
+        ret, frame = webcam_obj.read()  # read one frame each loop always
         if not ret:
-            #print("[SP:] could not read frame from camera")
+            print("[SP:] could not read frame from camera")
             break
 
-        if recording:
-            writer.write(frame)
-        
         if show_stream:
             cv2.imshow("Live", frame)
-            if cv2.waitKey(1) == 27:
-                break
-        
-        if not recording and not show_stream:   # camera not in use so close it to save resources
-            clean_camera()
-            camera_in_use = False
-            break
+            if cv2.waitKey(1) == 27: # this is needed because ... ?
+                print("[SP:] ESC PRESSED!!")
+                show_stream = False
+                cv2.destroyWindow("Live")
 
-# This cam_frame_loop function will only run again if if camera_in_use wasn't turned off (see main)
-# Next time camera_in_use turned on - a new cap object is generated at the top of cam_frame_loop anyway
+        if recording:
+            if writer is None:  # means new recording triggered - so create a new filename and 10-second segment
+                output_file = os.path.join(output_dir, f"webcam_{time.strftime("%Y%m%d_%H%M%S")}.mp4") # ".mp4 = use mp4 container"  (best for web)
+                fourcc = cv2.VideoWriter_fourcc(*'avc1')  # fourcc = "4 character codec", * = unpack operator, avc1 = H.264 -> is best for web, returns 32bit int codec ID
+                writer = cv2.VideoWriter(output_file, fourcc, 20.0, (640, 480)) # must create a new cv2.VideoWriter each time, no way to update it
+                end_time = time.time() + clip_interval_secs # unix time is in seconds so just add
+            
+            if end_time > time.time():
+                writer.write(frame)
+            else:
+                writer.release()
+                writer = None   # trigger the if above again to create a new filename
+
+        if not recording:
+            if writer is not None:  # when the recording is stopped release the writer
+                writer.release()
+                writer = None    #  set back to None, also explicitly dereferencing frees memory where the VideoWriter instance was stored
+            
+            if not show_stream:   # not recording + not showing screen = camera not in use so close webcam_obj to save resources
+                clean_camera()
+                camera_in_use = False
+                break
+#end 
 
 def clean_camera():
-    global host, port, conn, server_socket, writer, cap
+    global host, port, conn, server_socket, writer, webcam_obj
 
-    #print("[SP:] Cleaning up")
+    print("[SP:] Cleaning up")
     
     # Try to release camera
-    if cap:
-        #print("[SP:] cap exists, releasing")
-        cap.release()
+    if webcam_obj:
+        #print("[SP:] webcam_obj exists, releasing")
+        webcam_obj.release()
 
-    if cap.isOpened():
-        print("[SP:] cap still appears open after release!")
+    if webcam_obj.isOpened():
+        print("[SP:] webcam_obj still appears open after release!")
     else:
-        print("[SP:] cap released")
+        print("[SP:] webcam_obj released")
 
-    # Also try to destroy stream window
-    cv2.destroyWindow("Live")
-    cv2.destroyAllWindows()
+    cv2.destroyAllWindows() # will close all if any exist, won't raise an error if none exist
+
     try:
         visible = cv2.getWindowProperty("Live", cv2.WND_PROP_VISIBLE)
         if visible < 1:
@@ -209,6 +229,7 @@ def clean_camera():
             print("[SP:] stream window still visible")
     except cv2.error:
         print("[SP:] stream window destroyed!! (no longer accessible)")
+
 # End while loop
 
 
@@ -236,5 +257,8 @@ if __name__ == "__main__":
             except OSError as e:
                 print(f"[SP:] Failed to close socket: {e}")
             break
+
+        time.sleep(2) # massivly reduces CPU usage while camera not in use
+
         # is there any way process_running is true while camera in use and exit_button_pressed are false? this would get stuck if so ?????
     print("[SP:] subprocess ended, exiting.")
