@@ -86,7 +86,7 @@ def send_command(command):
         for attempt in range(max_send_retries):
             try:
                 client_socket.sendall((command + '\n').encode())
-                print(f"Command '{command}' sent to subprocess")
+                #print(f"Command '{command}' sent to subprocess")
                 break
             except Exception as e:
                 print(f"Send attempt {attempt+1} failed: {e}")
