@@ -4,178 +4,127 @@ import socket
 import time
 import datetime
 import os
+import queue
 
-# global controls
 process_running = True
 show_stream = False
 recording = False
 camera_in_use = False
-exit_button_pressed = False
+remote_viewing = False
+exit_command = False
 
-# I'm just going to use these global controls and not try to be too clever
-# but these could be passed instead of being global...
 writer = None
 webcam_obj = None
 
-# socket stuff
 host = '127.0.0.1'  # or 'localhost'
 port = 5000         # any free port
-
-conn = None
 server_socket = None
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
 output_subdirectory = "webcam_recordings"
 output_dir = os.path.join(script_directory, output_subdirectory)
 os.makedirs(output_dir, exist_ok=True)
-
 clip_interval_secs = 5
 
-def handle_commands():
-    # asynchronous, runs in it's own thread. could use signal.pthread_kill to terminate but better to use "shared flag" method - process_running boolean here, 
-    # kiling a thread directly can apparently cause a lot of issues on windows espically
 
-    global show_stream, recording, writer, camera_in_use, process_running, exit_button_pressed
-    global host, port, conn, server_socket
-    # global is not declaring a variable it's saying "Inside this function, when I refer to some_variable, I mean the one from the global scope — not a new local one."
-    # without "global", the objects would be re-created inside this scope (Python would re-delare it in here)
-    # there is also "nonlocal" to modify variables from an enclosing (but non-global) scope, similar
-    # Python allows scope climbing for access, but requires explicit delarations for scope climbing for assignments / modifications.
-    # JavaScript's allows scope climbing for assignment and access without explicit declaration, which can cause scope pollution
+def listen_connections():
+    global show_stream, recording, writer, camera_in_use, process_running, exit_command
+    global host, port, server_socket
     
-    while process_running:
-        # Socket initialization
-
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
-        # = "make a socket object which will use the network stack (AF_INET), specifically TCP for transport (SOCK_STREAM), not UDP"
-        
-        server_socket.bind((host, port)) # bind to the socket
-        server_socket.listen(1)  # listen to the socket, single connection; can be expanded
-
-        print("server_socket.getsockname:::", server_socket.getsockname())
-
+    while process_running:                  # Socket initialization, listen for connection, then listen for command loop
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # = "make a socket object which will use the network stack (AF_INET), specifically TCP for transport (SOCK_STREAM), not UDP"
+        server_socket.bind((host, port))    # bind to the socket
+        server_socket.listen(1)             # listen to the socket, single connection; can be expanded
+        print("[SP:] Waiting for client to connect to socket...\n")
         try:
-            print("[SP:] Waiting for GUI to connect to socket...")
-
-            conn, addr = server_socket.accept() # So for handling multiple clients just break them off into a new threads each time here, using some loop logic
-
-            # "accept() -> (socket object, address info)" # "plain-language description" of what the method socket.accept() returns, not very useful info...
-            # "(method) def accept() -> tuple[socket, _RetAddress]" # more useful description
-            print("conn", type(conn), conn.getsockname()) # <class 'socket.socket'>
-            print("addr", type(addr), addr)  # <class 'tuple'>)  ("IP_address" as a string + port as an int))
-            
-            # https://docs.python.org/3/library/socket.html#socket.socket.accept
-            # conn is a new socket object usable to send and receive data on the connection, 
-            # address is the address bound to the socket on the other end of the connection
-
-            # So this means .accept() has already done the TCP handshake and has gathered the IP address and
-            # temporary port (ephemeral temporary port) that the client will use for the TCP connection on it's side
-            # and stores this all in a newly created socket - "conn". It creates a new socket object why?:
-            # to allow one "server_socket" socket object as a master, then as additional clients attempt to establish a connection
-            # just spawn new socket objects with that connection already set up. 
-            # 
-            # While these TCP connections are still alive the conn object can keep communicating with the client.
-            # These object dont need to like go through the original server or anything or even use a different port, how?
-            # any packets coming from that client address + client ephemeral port,
-            #  the OS will be able to use this to route the packets directly to the correct object based on what object has that _RetAddress
-            # client_socket.getpeername() will show the conn objects's (client_ip, client_port)
-            # - this process will know exactly what conn object that packet was meant for
-            # 
-            # HOW exactly do the packets get from the OS to a specific object in a process:
-            # The OS maintains a mapping between each socket file descriptor(an integer) and the corresponding kernel-level socket object. 
-            # When network data arrives for a specific connection, 
-            # the OS uses the connection’s identifying information(the four-tuple of source IP, source port, destination IP, and destination port) 
-            # to locate the appropriate socket. It then queues the data in the socket’s kernel buffer. 
-            # Your Python process, which holds a reference to the file descriptor(e.g. via the conn object), 
-            # can access this data by invoking syscalls like recv(), which read from the kernel buffer via that file descriptor.
-
-            #print("[SP:] GUI connected to socket.")
+            conn, addr = server_socket.accept()     # <- blocking, will wait here for a connection
         except Exception as e:
-            #print(f"Problem accepting connection: {e}")
+            print(f"Problem accepting connection: {e}")
+            break
+        print("[SP:] Client connected: ", conn, addr)
+        
+        new_thread = threading.Thread(target=listen_commands, name=f"Thread-ClientIP-{addr[0]}", args=(conn, addr)) 
+        # Create a new thread for each connection, and name it by IP
+        # there is multiple conn objects so can't use a global conn, just pass new one to thread each time with args=conn
+        new_thread.start()
+
+    print("[SP:] listen_connections finished")
+
+def listen_commands(conn, addr):      # new thread each time to listen for commands on each connection socket obj (conn)
+    global writer, camera_in_use, exit_command, process_running, webcam_obj
+    global host, port, server_socket, show_stream, output_dir, clip_interval_secs
+    while process_running:
+        try:
+            print("[SP:] Waiting here for a command...", conn)
+            data = conn.recv(65536)         # <- blocking, recv = "receive", app will just hang here until a command or exit is recieved
+            if not data:
+                print("[SP:] Empty payload == connection closed by client")
+                break
+            cmd = data.decode().strip()     # print("UTF-8 decoded bytes:", cmd)
+            print("[SP:] Command received:", cmd)
+            if cmd == "show_stream":
+                show_stream = True
+                camera_in_use = True        # Turn the camera loop on after setting things up here
+            elif cmd == "hide_stream":
+                show_stream = False
+            elif cmd == "start_record":     # as this function is threaded (asynchronous), these operations will not block cam_frame_loop
+                recording=True              # now it will record on the next loop
+                camera_in_use = True        # Turn the camera loop on after setting things up here
+            elif cmd == "stop_record":
+                recording=False             # don't release the cv writer here, causing problems, do it in loop
+            elif cmd == "exit":
+                graceful_socket_shutdown(conn)  # need to close the socket from here as each listen_commands thread has it's own non-global socket object
+                exit_command = True             # gracefully exit from the inside cam_frame_loop, instead of just killing it from here
+                return                          # break while loop so as not to wait for another command
+            cmd = "blank"
+        except ConnectionResetError:
+            print("[SP:] Connection was closed/reset by client.")
+            break
+        except Exception as e:
+            print(f"[SP:] Error reading from socket: {e}")
             break
 
-        while process_running:
-            # Main process
-            try:
-                #print("[SP:] Waiting here for a command...")
-                data = conn.recv(65536)  # <- blocking, recv = "receive", app will just hang here until a command or exit is recieved
-                #print("Raw bytes: ", data)
-                
-                if not data:                
-                    #print("[SP:] No data, connection closed by client)
-                    break
-                #print(f"[SP:] Command received: {data}") # ?
-                cmd = data.decode().strip()
-                
-                #print("UTF-8 decoded bytes:", cmd)
-
-                # NOTES:
-                # With a TCP socket, a client signals termination by sending a TCP packet with a FIN flag (single bit, 1 or 0) and an empty payload
-                # The C library and thus Python reads the payload in Bytes and passes it to the application when recv() is called
-                # So "data" will be a  python bytes object (you'll see: b'' if printed)
-                # If the message was "Hello" you'd see b'Hello', Python's print() auto decodes ASCII range characters (0-127)
-                # If the message was € you'd see b'\xe2\x82\xac' (bytes as Hex) until cmd = data.decode() is called 
-                # (.decode() default is UTF-8, which is what most clients will be sending anyway!), 
-                # see note Bytes_UFT_encoding_etc.txt for deeper info on bytes and UTF encoding
+    print("[SP:] listen_commands finished")
 
 
-                # control logic:  !! make this separate function
-                if cmd == "show_stream":
-                    show_stream = True
-                    camera_in_use = True        # Turn the camera loop on after setting things up here
-                elif cmd == "hide_stream":
-                    show_stream = False
-                elif cmd == "start_record":
-                        # as this function is threaded (asynchronous), these operations will not block cam_frame_loop
-                    recording=True              # now it will record on the next loop
-                    camera_in_use = True        # Turn the camera loop on after setting things up here
-                elif cmd == "stop_record":
-                    recording=False # don't release the cv writer here, causing problems, do it in loop
-                elif cmd == "exit":
-                    #print("[SP:] Exiting...")
-                    exit_button_pressed = True  # i think more graceful to exit from the inside cam_frame_loop, instead of just killing it from here
-                    return                      # jump out so as not to wait for another command
-                cmd = "noting new"
-            except ConnectionResetError:
-                #print("[SP:] Connection was closed/reset by client.")
-                break
-            except Exception as e:
-                #print(f"[SP:] Error reading from socket: {e}")
-                break
-        print ("SUB process finished")
-
-def cam_frame_loop():
-    # Runs as long as camera_in_use is true. New webcam_obj etc generated upon each restart
-
-    global writer, camera_in_use, exit_button_pressed, process_running, webcam_obj
+def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
+    global writer, camera_in_use, exit_command, process_running, webcam_obj
     global host, port, conn, server_socket, show_stream, output_dir, clip_interval_secs
-    print("[SP:] Opening webcam.")
 
-    webcam_obj = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    # adding cv2.CAP_DSHOW here make the camera open 5x faster ...
-    # i dont know why this worked found here: https://answers.opencv.org/question/215586/why-does-videocapture1-take-so-long/
+    print("[SP:] Opening webcam.")
+    webcam_obj = cv2.VideoCapture(0, cv2.CAP_DSHOW) # CAP_DSHOW = windows direct show, may need to change for linux
 
     if not webcam_obj.isOpened():
         print("[SP:] Could not open webcam.")
         return
     else:
         print("[SP:] Opened webcam.")
-    
-    while camera_in_use:
-        if exit_button_pressed:
+
+    while camera_in_use:                # Runs as long as camera_in_use is true
+        start_time = time.time()        # take the time before reading frame (+ other operations)
+        if exit_command:
+            print("[SP:] Exiting...")
             clean_camera()
             camera_in_use = False
-            process_running = False # will force the _main_ while loop to exit and thus program end, must break cam_frame_loop first
+            process_running = False     # will force the _main_ while loop to exit and thus program end, must break cam_frame_loop first
             return
 
-        ret, frame = webcam_obj.read()  # read one frame each loop always
+        ret, frame = webcam_obj.read()  # read one frame each loop always, if ret is false = no frame available 
         if not ret:
-            print("[SP:] could not read frame from camera")
-            break
-
+            print("[SP:] could not read a frame from camera on this iteration")
+            # break
+            # dont break here. if the loop is attempting to read frames faster than they are being captured by the webcam this could cause issues
+            # if the webcam driver or OpenCV doesn't buffer the frames in a way that makes them available for the extra reads 
+            # ie "re-read previous frame if new one not available" - then you will get ret as False and the loop will exit
+            # !!! Maybe good idea to: check advertised FPS of the camera, 
+            # measure time taken to read a frame + do other processes in this loop,
+            # wait for the difference of those times at the bottom, befre running the loop againa nd capturing an already captured frame 
+            # saving processing power and data
+            pass
+            
         if show_stream:
             cv2.imshow("Live", frame)
-            if cv2.waitKey(1) == 27: # this is needed because ... ?
+            if cv2.waitKey(1) == 27:         # delay of 1 millisecond only. cv2.waitKey is mandatory it seems, not sure why...
                 print("[SP:] ESC PRESSED!!")
                 show_stream = False
                 cv2.destroyWindow("Live")
@@ -202,63 +151,57 @@ def cam_frame_loop():
                 clean_camera()
                 camera_in_use = False
                 break
-#end 
+
+    print("[SP:] cam_frame_loop finished")
+
 
 def clean_camera():
-    global host, port, conn, server_socket, writer, webcam_obj
-
     print("[SP:] Cleaning up")
+    global host, port, conn, server_socket, writer, webcam_obj
     
-    # Try to release camera
-    if webcam_obj:
-        #print("[SP:] webcam_obj exists, releasing")
+    if webcam_obj:              # Try to release camera
         webcam_obj.release()
-
     if webcam_obj.isOpened():
         print("[SP:] webcam_obj still appears open after release!")
-    else:
-        print("[SP:] webcam_obj released")
 
-    cv2.destroyAllWindows() # will close all if any exist, won't raise an error if none exist
+    cv2.destroyAllWindows()     # will close all if any exist, won't raise an error if none exist
 
+    # check it's closing properly, if facing issues:
+    # try:
+    #     visible = cv2.getWindowProperty("Live", cv2.WND_PROP_VISIBLE)
+    #     if visible < 1:
+    #         print("[SP:] stream window destroyed!")
+    #     else:
+    #         print("[SP:] stream window still visible")
+    # except cv2.error:
+    #     print("[SP:] stream window destroyed!! (no longer accessible)")
+
+    print("[SP:] clean_camera finished")
+
+
+def graceful_socket_shutdown(conn):
+    print("[SP:] Attempting to safely disconnecting the socket", conn)
     try:
-        visible = cv2.getWindowProperty("Live", cv2.WND_PROP_VISIBLE)
-        if visible < 1:
-            print("[SP:] stream window destroyed!")
-        else:
-            print("[SP:] stream window still visible")
-    except cv2.error:
-        print("[SP:] stream window destroyed!! (no longer accessible)")
-
-# End while loop
+        conn.shutdown(socket.SHUT_RDWR)  # Gracefully shut down both directions
+        print("[SP:] Socket shutdown successfully")
+    except OSError as e:
+        print(f"[SP:] Failed to shutdown socket: {e}")
+    except Exception as e:
+        print(f"[SP:] Failed to shutdown socket!: {e}")
+    try:                                # Now close the socket
+        conn.close()
+        print("[SP:] Socket closed successfully")
+    except OSError as e:
+        print(f"[SP:] Failed to close socket: {e}")
 
 
 if __name__ == "__main__":
-    
-    threading.Thread(target=handle_commands, daemon=True).start() # <- Non-Blocking, thread to listen on socket and relay commands
-    
+    threading.Thread(target=listen_connections, daemon=True).start()    # <- Non-Blocking, thread to listen on socket and relay the commands
     while process_running:
         if camera_in_use:
-            cam_frame_loop()    # <- Blocking, camera must be turned off first or process_running loop can't end
-        if exit_button_pressed:          # <- If exit pressed, process_running will also end, so kill the socket here just befre ending
-            print("[SP:] Attempting to safely disconnecting the socket", conn)
-            try:
-                conn.shutdown(socket.SHUT_RDWR)  # Gracefully shut down both directions
-                print("[SP:] Socket shutdown successfully")
-            except OSError as e:
-                print(f"[SP:] Failed to shutdown socket: {e}")
-            except Exception as e:
-                print(f"[SP:] Failed to shutdown socketttttttttt: {e}")
-
-            # Now close the socket
-            try:
-                conn.close()
-                print("[SP:] Socket closed successfully")
-            except OSError as e:
-                print(f"[SP:] Failed to close socket: {e}")
+            cam_frame_loop()        # <- Blocking, camera must be turned off first or process_running loop can't end
+        if exit_command:            # <- If exit pressed, process_running will also end, so kill the socket here just befre ending
             break
-
-        time.sleep(2) # massivly reduces CPU usage while camera not in use
-
-        # is there any way process_running is true while camera in use and exit_button_pressed are false? this would get stuck if so ?????
-    print("[SP:] subprocess ended, exiting.")
+        time.sleep(2)               # massivly reduces CPU usage while camera not in use
+    print("[SP:] Subprocess ended, exiting.")
+    # is there any way process_running is true while camera in use and exit_command are false? this would get stuck if so ?????
