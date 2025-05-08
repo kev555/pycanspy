@@ -117,10 +117,19 @@ def send_frame_server(conn):
     print("[SP:] send_frame_server, conn obj:", conn)
     while server_viewing:
         try:
-            frame = frame_queue.get(timeout=1)            # Get frame from queue, with timeout
-            data = pickle.dumps(frame)                      # Serialize the frame into bytes
-            message_size = struct.pack("!I", len(data))      # Send size in an "L" struct (32 bit unsigned long integer)
-            conn.sendall(message_size + data)               # Send the frame
+            frame = frame_queue.get(timeout=1)              # Get frame from queue, with timeout
+            fame_bytes = pickle.dumps(frame)                # Serialize the frame into bytes
+            
+            frame_size_desc = struct.pack("!I", len(fame_bytes))      
+            # Send a describtion of the size of the fame_bytes to be transmitted 
+            # Use an "L" struct... NO... use an "!I" - 4 byte "network endian style" !!??
+            # ! = network byte order (big-endian)
+            # I = unsigned int (4 bytes)
+            
+            conn.sendall(frame_size_desc + fame_bytes)      # Send the first 4 bytes notifying the size of the frame data, then the frame data itslef
+            # sendall() ensures that all the data you want to send is eventually transmitted, 
+            # even if it has to be broken into multiple TCP packets, TCP will guarantee ordered delivery
+
         except queue.Empty:
             print("[SP:] No frame in queue, continue to next iteration")
             continue # No frame in queue, continue to next iteration
@@ -136,12 +145,6 @@ def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
 
     print("[SP:] Opening webcam.")
     webcam_obj = cv2.VideoCapture(0) 
-    # # There is a bunch of VideoCaptureAPIs: https://docs.opencv.org/3.4/d4/d15/group__videoio__flags__base.html#ga023786be1ee68a9105bf2e48c700294d
-    # On Windows CAP_MSMF is the default if none specified, but CAP_DSHOW seems to be much much faster, so use that
-    # **Actually ...HW_TRANSFORMS was causing delay in CAP_MSMF, fix mentioned: (https://github.com/opencv/opencv/issues/17687)
-    # Windows only supports CAP_DSHOW and CAP_MSMF. CAP_DSHOW is older, CAP_MSMF is the newer and allows e.g. cv2.CAP_PROP_FPS to be used
-    # On Linux default is CAP_V4L2
-    
     if not webcam_obj.isOpened():
         print("[SP:] Could not open webcam.")
         return

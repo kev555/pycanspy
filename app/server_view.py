@@ -25,7 +25,7 @@ def receive_video(server_ip, server_port):
     # create a socket object (does not connect to anything or open a connection yet)
     if client_socket is None:                                               # socket doesnt exist yet
         print("creating socket...")
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)   # try to create it
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # try to create it
 
     try:
         client_socket.connect((host, port)) # ConnectionRefusedError if not working
@@ -34,28 +34,30 @@ def receive_video(server_ip, server_port):
     except Exception as e:
         print("no connect to socket")
 
-    data = b""
-    payload_size = struct.calcsize("!I")   
+    data_buffer = b""
+    payload_size = struct.calcsize("!I")
 
     try:
         while True:
 
-            print("remote view] -- loop ran")
-            while len(data) < payload_size:
-                data += client_socket.recv(4096)  # Increased buffer size
+            #print("remote view -- loop ran")
             
-
-            print("data loaded: ", len(data))
-
-            packed_msg_size = data[:payload_size]
-            data = data[payload_size:]
+            while len(data_buffer) < payload_size:      # "at least 4 bytes must be read"
+                data_buffer += client_socket.recv(4096)
+                # when you call sendall(), you're sending a large chunk of data. 
+                # TCP takes care of splitting this large data into multiple smaller packets and transmitting them over the network. 
+                # It doesn't matter how many packets it takes to send the entire data, because sendall() ensures all the data gets transmitted.
+            
+            packed_msg_size = data_buffer[:payload_size]        
+            # grab the first 4 bytes. Remember, first 4 bytes notate the size of the frame data, the rest of the bytes are the frame data itself
+            data_buffer = data_buffer[payload_size:]            # grab the rest of the bytes (the frame data itself)
             msg_size = struct.unpack("!I", packed_msg_size)[0]  
 
-            while len(data) < msg_size:
-                data += client_socket.recv(4096)  # Increased buffer size
+            while len(data_buffer) < msg_size:
+                data_buffer += client_socket.recv(4096)  # Increased buffer size
             
-            frame_data = data[:msg_size]
-            data = data[msg_size:]
+            frame_data = data_buffer[:msg_size]
+            data_buffer = data_buffer[msg_size:]
 
             try:
                 frame = pickle.loads(frame_data)
