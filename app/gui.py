@@ -43,36 +43,41 @@ def send_command(command):
         
         # os.path.exists was a pre check also here previously, but it only works on linux / unix , not windows, so just try to open the pipe directly
 
-        # Try to open to the socket
+        # create a socket object (does not connect to anything or open a connection yet)
         if client_socket is None:                                               # socket doesnt exist
-            print("Opening socket...")
+            print("Creating socket...")
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)   # try to create it
-
-        if client_socket.fileno() == -1:                                        # socket was closed?
-            print("Socket was closed... creating a new one...")
-            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)   # a closed socket is a dead socket, need to create a new one
+        
+        # Sometimes the client_socket exists but has been "closed".
+        # Closing a socket with .close():
+        # Does NOT destroy the Python object in memory.
+        # DOES release the OS-level file descriptor,
+        # check it with :
+        if client_socket.fileno() == -1:
+            print("Socket was closed... creating a new one...")                 # a closed socket is a dead socket, need to create a new one
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         
         if client_socket is None or client_socket.fileno() == -1:               # check if opened now
             print ("Could not create a socket")
             return
         else:
-            print("Socket is open")
+            print("Socket object created")
 
-        # Check if socket is already connected
+        # Connect to server socket if not already connected
+        # make this a function - soccet_connect or something:
         max_connect_retries = 5
         try:
-            client_socket.getpeername() # client_socket.getpeername() attempts to return the address of the remote socket, raises OSError if socket not connected
+            client_socket.getpeername()             # client_socket.getpeername() attempts to return the address of the remote socket, raises OSError if socket not connected
             print("Socket is already connected.")
-        except OSError:
-            # Not connected, attempt connection
+        except OSError:                             # Not connected, attempt connection
             for attempt in range(max_connect_retries):
                 try:
                     client_socket.connect((host, port)) # ConnectionRefusedError if not working
                     print(f"Connected to socket on attempt {attempt+1}")
-                    try:
-                        print("getsockname() from guiiiiiiiii:", client_socket.getsockname())
-                    except Exception as e:
-                        print(f"guiiiiiiiii {e}")
+                    # try:
+                    #     print("getsockname() from guiiiiiiiii:", client_socket.getsockname())
+                    # except Exception as e:
+                    #     print(f"guiiiiiiiii {e}")
                     break
                 except Exception as e:
                     print(f"Connection attempt {attempt+1} failed: {e}")
@@ -107,8 +112,11 @@ def start_showing():
     send_command("show_stream")  # € to see raw bytes
 def stop_showing():
     send_command("hide_stream")
+def start_server_view():
+    send_command("start_server_view")
 
-def on_exit():
+
+def on_exit(): # change this name to do_exit
     print("GUI closed. Stopping subprocesses and closing socket")
     # probably a good idea to notify the user too, just "shutting down..." as this may take a couple of seconds to gracefully shut down everything
 
@@ -136,7 +144,7 @@ def on_exit():
     
     # Try to close the socket if it's still open
     if client_socket and not client_socket.fileno() == -1: # "client_socket exitis but is not closed"
-        print("huhhhhhh555555555555", client_socket)
+        print("huhh5555", client_socket)
         try:
             client_socket.shutdown(socket.SHUT_RDWR)  # Gracefully shut down both directions
             if client_socket.fileno() == -1:
@@ -174,6 +182,10 @@ def gui_setup():
 
     hide_button = tk.Button(
         GUI_window, text="Hide Camera Stream", command=stop_showing)
+    hide_button.pack(pady=10)
+
+    hide_button = tk.Button(
+        GUI_window, text="View On Server", command=start_server_view)
     hide_button.pack(pady=10)
 
     quit_button = tk.Button(GUI_window, text="Quit", command=on_exit)
