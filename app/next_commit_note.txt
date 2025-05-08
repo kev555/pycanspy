@@ -1,13 +1,11 @@
 commit note:
 
-
-###
-
-
-
-
-
-
+Fixed some git issues:
+- Tried to rebased every commit to ammend name + email, very messy
+- I was also running git add . NOT from the root directlory,
+it seems git add -A is needed in that case, as it includes all files even from parent directories 
+https://github.com/git-guides/git-add
+- perhaps better to stage and commit on a per file basis from now on....
 
 
 
