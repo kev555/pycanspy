@@ -1,16 +1,20 @@
-import cv2
 import threading
 import socket
 import time
 import datetime
 import os
 import queue
+os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
+import cv2
+import pickle
+import struct
+
 
 process_running = True
 show_stream = False
 recording = False
 camera_in_use = False
-remote_viewing = False
+server_viewing = False
 exit_command = False
 
 writer = None
@@ -26,18 +30,29 @@ output_dir = os.path.join(script_directory, output_subdirectory)
 os.makedirs(output_dir, exist_ok=True)
 clip_interval_secs = 5
 
+frame_queue = queue.Queue(maxsize=3000)
+# queue.Queue(maxsize=200) = 200 fames max
+# if frames are being produced MUCH faster than being consumed the Queue will fill up 
+# "except queue.Full" be raised when trying to .put another frame on the queue (in cam_frame_loop)
+# although this won't fail it will cause frames to be dropped from the remote viewing
+# with 300 frames Queue and ~30 fps camera == 10 delay before starting to drop frames
 
 def listen_connections():
     global show_stream, recording, writer, camera_in_use, process_running, exit_command
     global host, port, server_socket
     
-    while process_running:                  # Socket initialization, listen for connection, then listen for command loop
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # = "make a socket object which will use the network stack (AF_INET), specifically TCP for transport (SOCK_STREAM), not UDP"
-        server_socket.bind((host, port))    # bind to the socket
-        server_socket.listen(1)             # listen to the socket, single connection; can be expanded
-        print("[SP:] Waiting for client to connect to socket...\n")
+    # Socket initialization - this is the permenant gateway socket for all connections
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
+    # = "make a socket object which will use the network stack (AF_INET), specifically TCP for transport (SOCK_STREAM), not UDP"
+    server_socket.bind((host, port))    # bind to the socket
+    server_socket.listen(1)             # listen to the socket, single connection; can be expanded
+    
+    while process_running:        # listen for new connections, creating new sockets for each      
+        print("[SP:] Waiting for a new client to connect to the socket...")
         try:
-            conn, addr = server_socket.accept()     # <- blocking, will wait here for a connection
+            conn, addr = server_socket.accept()     # <- blocking, listen for new connection attempted on this master socket, 
+                                                    # then generate a new socket "conn" and link the connection request to that instead,
+                                                    # then continue listeing on the master socket here, rinse and repeat
         except Exception as e:
             print(f"Problem accepting connection: {e}")
             break
@@ -45,7 +60,7 @@ def listen_connections():
         
         new_thread = threading.Thread(target=listen_commands, name=f"Thread-ClientIP-{addr[0]}", args=(conn, addr)) 
         # Create a new thread for each connection, and name it by IP
-        # there is multiple conn objects so can't use a global conn, just pass new one to thread each time with args=conn
+        # there is multiple conn objects so can't use a global, just pass new one to thread each time with args=conn
         new_thread.start()
 
     print("[SP:] listen_connections finished")
@@ -53,9 +68,10 @@ def listen_connections():
 def listen_commands(conn, addr):      # new thread each time to listen for commands on each connection socket obj (conn)
     global writer, camera_in_use, exit_command, process_running, webcam_obj
     global host, port, server_socket, show_stream, output_dir, clip_interval_secs
+    global server_viewing
     while process_running:
         try:
-            print("[SP:] Waiting here for a command...", conn)
+            print("[SP:] Waiting here for a command...")
             data = conn.recv(65536)         # <- blocking, recv = "receive", app will just hang here until a command or exit is recieved
             if not data:
                 print("[SP:] Empty payload == connection closed by client")
@@ -72,6 +88,16 @@ def listen_commands(conn, addr):      # new thread each time to listen for comma
                 camera_in_use = True        # Turn the camera loop on after setting things up here
             elif cmd == "stop_record":
                 recording=False             # don't release the cv writer here, causing problems, do it in loop
+            elif cmd == "start_server_view":      
+                # additional new sub-thread each time each remote connection socket obj (conn)
+                # send over the same (conn) TCP connection, (TCP is duplex), no need to creat a new socket / TCP connection
+                # two (or more) threads can safely read from the same queue.Queue in Python
+                # there is multiple conn objects so can't use a global conn, just pass new one to thread each time with args=conn
+
+                print("[SP:] send_frame_server, conn obj:", conn)
+                new_sub_thread = threading.Thread(target=send_frame_server, name=f"Sub-Thread-ClientIP-{addr[0]}", args=(conn,))
+                new_sub_thread.start()
+                server_viewing=True
             elif cmd == "exit":
                 graceful_socket_shutdown(conn)  # need to close the socket from here as each listen_commands thread has it's own non-global socket object
                 exit_command = True             # gracefully exit from the inside cam_frame_loop, instead of just killing it from here
@@ -87,18 +113,42 @@ def listen_commands(conn, addr):      # new thread each time to listen for comma
     print("[SP:] listen_commands finished")
 
 
+def send_frame_server(conn):
+    print("[SP:] send_frame_server, conn obj:", conn)
+    while server_viewing:
+        try:
+            frame = frame_queue.get(timeout=1)            # Get frame from queue, with timeout
+            data = pickle.dumps(frame)                      # Serialize the frame into bytes
+            message_size = struct.pack("!I", len(data))      # Send size in an "L" struct (32 bit unsigned long integer)
+            conn.sendall(message_size + data)               # Send the frame
+        except queue.Empty:
+            print("[SP:] No frame in queue, continue to next iteration")
+            continue # No frame in queue, continue to next iteration
+        except Exception as e:
+            print(f"Error sending frame: {e}")
+            break  # Exit thread on error.  Important to prevent it from trying to send if the connection is broken.
+
+
 def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
     global writer, camera_in_use, exit_command, process_running, webcam_obj
     global host, port, conn, server_socket, show_stream, output_dir, clip_interval_secs
+    global frame_queue
 
     print("[SP:] Opening webcam.")
-    webcam_obj = cv2.VideoCapture(0, cv2.CAP_DSHOW) # CAP_DSHOW = windows direct show, may need to change for linux
-
+    webcam_obj = cv2.VideoCapture(0) 
+    # # There is a bunch of VideoCaptureAPIs: https://docs.opencv.org/3.4/d4/d15/group__videoio__flags__base.html#ga023786be1ee68a9105bf2e48c700294d
+    # On Windows CAP_MSMF is the default if none specified, but CAP_DSHOW seems to be much much faster, so use that
+    # **Actually ...HW_TRANSFORMS was causing delay in CAP_MSMF, fix mentioned: (https://github.com/opencv/opencv/issues/17687)
+    # Windows only supports CAP_DSHOW and CAP_MSMF. CAP_DSHOW is older, CAP_MSMF is the newer and allows e.g. cv2.CAP_PROP_FPS to be used
+    # On Linux default is CAP_V4L2
+    
     if not webcam_obj.isOpened():
         print("[SP:] Could not open webcam.")
         return
     else:
         print("[SP:] Opened webcam.")
+
+    # camera_fps = webcam_obj.get(cv2.CAP_PROP_FPS) # was going to sync frames manually..... see note
 
     while camera_in_use:                # Runs as long as camera_in_use is true
         start_time = time.time()        # take the time before reading frame (+ other operations)
@@ -116,18 +166,25 @@ def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
             # dont break here. if the loop is attempting to read frames faster than they are being captured by the webcam this could cause issues
             # if the webcam driver or OpenCV doesn't buffer the frames in a way that makes them available for the extra reads 
             # ie "re-read previous frame if new one not available" - then you will get ret as False and the loop will exit
-            # !!! Maybe good idea to: check advertised FPS of the camera, 
-            # measure time taken to read a frame + do other processes in this loop,
-            # wait for the difference of those times at the bottom, befre running the loop againa nd capturing an already captured frame 
-            # saving processing power and data
             pass
-            
+
         if show_stream:
             cv2.imshow("Live", frame)
             if cv2.waitKey(1) == 27:         # delay of 1 millisecond only. cv2.waitKey is mandatory it seems, not sure why...
                 print("[SP:] ESC PRESSED!!")
                 show_stream = False
                 cv2.destroyWindow("Live")
+        
+        if server_viewing: # Obviously not going to try to process and send the frames here, send them to a queue, then use a thread to work off the queue
+            try:
+                frame_queue.put(frame, block=False)     # put frame in queue
+            except queue.Full:
+                print("Frame queue is full (or blocked?) - A frame was dropped")
+                pass                                    # pass = no action needed placeholder
+        
+        if not server_viewing:
+            # kill the remote viewing thread .. ?
+            pass
 
         if recording:
             if writer is None:  # means new recording triggered - so create a new filename and 10-second segment
@@ -151,7 +208,8 @@ def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
                 clean_camera()
                 camera_in_use = False
                 break
-
+    
+    # end camera_in_use
     print("[SP:] cam_frame_loop finished")
 
 
