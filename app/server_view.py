@@ -14,11 +14,11 @@ lock = threading.Lock()
 
 
 # socket stuff
-host = '127.0.0.1'  # or 'localhost'
-port = 5000         # any free port
+server_ip = '127.0.0.1'  # or 'localhost'
+server_port = 5000         # any free port
 client_socket = None
 
-def receive_video(server_ip, server_port):
+def receive_video(host, port):
     # """Receives video frames from the client and updates frame_to_display."""
     global frame_to_display, client_socket
     
@@ -35,29 +35,48 @@ def receive_video(server_ip, server_port):
         print("no connect to socket")
 
     data_buffer = b""
-    payload_size = struct.calcsize("!I")
+    fourbyte_un_bigE_struct = struct.calcsize(">I") # an ">I" struct, > = big-endian (TCP/IP standard), I = unsigned int (4 bytes))
 
     try:
         while True:
 
-            #print("remote view -- loop ran")
-            
-            while len(data_buffer) < payload_size:      # "at least 4 bytes must be read"
+            while len(data_buffer) < fourbyte_un_bigE_struct: # read at least 4 bytes before continuing, as the frame lenght size description header is at least needed
                 data_buffer += client_socket.recv(4096)
-                # when you call sendall(), you're sending a large chunk of data. 
-                # TCP takes care of splitting this large data into multiple smaller packets and transmitting them over the network. 
-                # It doesn't matter how many packets it takes to send the entire data, because sendall() ensures all the data gets transmitted.
-            
-            packed_msg_size = data_buffer[:payload_size]        
-            # grab the first 4 bytes. Remember, first 4 bytes notate the size of the frame data, the rest of the bytes are the frame data itself
-            data_buffer = data_buffer[payload_size:]            # grab the rest of the bytes (the frame data itself)
-            msg_size = struct.unpack("!I", packed_msg_size)[0]  
+                #print("got some data")
+                # sendall() in manage_camera.py can send an arbitrarily large amount of data (image frame), it doesn't have to be < 4096
+                # sendall() blocks until all data is sent, or an error occurs, even if this requires multiple .recv(4096)'s
+                # .recv() does not block until all data is recieved, it relies on OS kernel buffers between reads
+                # ie. after a .recv() of 4096 bytes here, while processing, pickeling and passing them to generate_frames function, 
+                # the manage_camera.py will most likely still be .sendall()ing more frames, but they will be stored in the OS kernel buffers unitl
+                # .recv() is called again to read then from that buffer. 
+                # If the buffer fills up and stays full long enough, the server (manage_camera.py), might raise a BrokenPipeError or ConnectionResetError.
 
-            while len(data_buffer) < msg_size:
-                data_buffer += client_socket.recv(4096)  # Increased buffer size
+                # TCP ensures reliable, in-order delivery of the raw packets (network level)
+                # Python's sendall() ensures an entire payload will be sent via TCP (application level here)
+                # The following code organizes the payload into usable image frames using .recv() and byte string slicing (code level here)
+                
             
-            frame_data = data_buffer[:msg_size]
-            data_buffer = data_buffer[msg_size:]
+            frame_size_description = data_buffer[:fourbyte_un_bigE_struct]        
+            # grab the first 4 bytes, which notate the size of the frame data
+            # the rest of the bytes are the frame data itself
+            toal_frame_size_as_int = struct.unpack("!I", frame_size_description)[0]     # decode them into an integer value
+            data_buffer = data_buffer[fourbyte_un_bigE_struct:]                         # take the rest of the recieved bytes, - thus trimming the first 4
+            
+            # print(frame_size_description) # b'\x00\x0e\x10\xa6' - ok
+            # print(toal_frame_size_as_int) # 921766 !!???
+
+            while len(data_buffer) < toal_frame_size_as_int:  
+                #print("got some more data")  
+                data_buffer += client_socket.recv(4096)         # keep reading 4096 bytes from the socket until at least the current frame's worth of data is collected
+            # If multiple frames are being sent, the final recv() in this loop may contain the start of the next frame.
+
+            # So extract only this frame's data from the buffer, leaving any trailing data (belonging to the next frame) for the next iteration.
+            frame_data = data_buffer[:toal_frame_size_as_int]
+            # frame_data is now a single full indivdual frame
+
+            # set the data_buffer to just contain the trailing data, if any, and repeat the process 
+            # Note: there could be an edge case where the final frame doesn't display properly if the connection is closed mid-transfer
+            data_buffer = data_buffer[toal_frame_size_as_int:]
 
             try:
                 frame = pickle.loads(frame_data)
@@ -66,6 +85,7 @@ def receive_video(server_ip, server_port):
             except pickle.UnpicklingError as e:
                 print(f"Error unpickling frame: {e}")
                 continue
+
 
     except Exception as e:
         print(f"Error receiving data: {e}")
@@ -79,14 +99,9 @@ def generate_frames():
     while True:
         with lock:
             if frame_to_display is not None:
-                try:
-                    ret, buffer = cv2.imencode('.jpg', frame_to_display)
-                    if ret:
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-                    else:
-                         yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' +  b'\r\n')
+                try: # ret, buffer = cv2.imencode('.jpg', frame_to_display) ### NOT GOING TO NEED TO ENCODE ON THIS SIDE
+                    yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display.tobytes() + b'\r\n') # can just do frame_to_display.toBtes here directly
                 except Exception as e:
                     print(f"Error encoding frame: {e}")
                     yield (b'--frame\r\n'
@@ -107,6 +122,7 @@ def index():
     return render_template('index.html')
 
 if __name__ == "__main__":
+
     receive_thread = threading.Thread(target=receive_video, args=(server_ip, server_port)) # Start the frame receiving thread
     receive_thread.daemon = True
     # running the thread as a daemon and letting the OS clean up the sockets if a crash happens is an acceptable solution for now, 

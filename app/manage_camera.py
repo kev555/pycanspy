@@ -8,6 +8,7 @@ os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 import cv2
 import pickle
 import struct
+import sys
 
 
 process_running = True
@@ -117,16 +118,21 @@ def send_frame_server(conn):
     print("[SP:] send_frame_server, conn obj:", conn)
     while server_viewing:
         try:
-            frame = frame_queue.get(timeout=1)              # Get frame from queue, with timeout
-            fame_bytes = pickle.dumps(frame)                # Serialize the frame into bytes
+            frame = frame_queue.get(timeout=1)                  # Get frame from queue, with timeout
+            print("raw: ", sys.getsizeof(frame))                # Size of frame in bytes: 921799 !!!!!!?
+            success, encoded_frame = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50]) # encode it now, before transmitting!
+            if not success:
+                raise RuntimeError("Failed to encode frame")
+            print("encoded: ", sys.getsizeof(encoded_frame))    # Size of frame in bytes: 16296 ! -> Much better for network transmission!
             
-            frame_size_desc = struct.pack("!I", len(fame_bytes))      
-            # Send a describtion of the size of the fame_bytes to be transmitted 
-            # Use an "L" struct... NO... use an "!I" - 4 byte "network endian style" !!??
-            # ! = network byte order (big-endian)
-            # I = unsigned int (4 bytes)
+            frame_bytes = pickle.dumps(encoded_frame)           
+            # Serialize the frame into bytes
+            frame_size_desc = struct.pack(">I", len(frame_bytes))      
+            # Send a describtion of the size of the frame_bytes to be transmitted 
+            # Use an ">I" struct: > = big-endian (TCP/IP standard), I = unsigned int (4 bytes)
             
-            conn.sendall(frame_size_desc + fame_bytes)      # Send the first 4 bytes notifying the size of the frame data, then the frame data itslef
+            conn.sendall(frame_size_desc + frame_bytes)      
+            # Send the first 4 bytes notifying the size of the frame data, then the frame data itslef
             # sendall() ensures that all the data you want to send is eventually transmitted, 
             # even if it has to be broken into multiple TCP packets, TCP will guarantee ordered delivery
 
