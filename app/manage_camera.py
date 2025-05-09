@@ -120,7 +120,7 @@ def send_frame_server(conn):
         try:
             frame = frame_queue.get(timeout=1)                  # Get frame from queue, with timeout
             print("raw: ", sys.getsizeof(frame))                # Size of frame in bytes: 921799 !!!!!!?
-            success, encoded_frame = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50]) # encode it now, before transmitting!
+            success, encoded_frame = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50]) # encode it now, before transmitting!!
             if not success:
                 raise RuntimeError("Failed to encode frame")
             print("encoded: ", sys.getsizeof(encoded_frame))    # Size of frame in bytes: 16296 ! -> Much better for network transmission!
