@@ -6,6 +6,7 @@ from flask import Flask, Response, render_template
 import threading
 import time
 import datetime
+import numpy
 
 app = Flask(__name__)
 global frame_to_display
@@ -39,7 +40,6 @@ def receive_video(host, port):
 
     try:
         while True:
-
             while len(data_buffer) < fourbyte_un_bigE_struct: # read at least 4 bytes before continuing, as the frame lenght size description header is at least needed
                 data_buffer += client_socket.recv(4096)
                 #print("got some data")
@@ -62,9 +62,6 @@ def receive_video(host, port):
             toal_frame_size_as_int = struct.unpack("!I", frame_size_description)[0]     # decode them into an integer value
             data_buffer = data_buffer[fourbyte_un_bigE_struct:]                         # take the rest of the recieved bytes, - thus trimming the first 4
             
-            # print(frame_size_description) # b'\x00\x0e\x10\xa6' - ok
-            # print(toal_frame_size_as_int) # 921766 !!???
-
             while len(data_buffer) < toal_frame_size_as_int:  
                 #print("got some more data")  
                 data_buffer += client_socket.recv(4096)         # keep reading 4096 bytes from the socket until at least the current frame's worth of data is collected
@@ -86,7 +83,6 @@ def receive_video(host, port):
                 print(f"Error unpickling frame: {e}")
                 continue
 
-
     except Exception as e:
         print(f"Error receiving data: {e}")
     finally:
@@ -107,9 +103,17 @@ def generate_frames():
                     yield (b'--frame\r\n'
                             b'Content-Type: image/jpeg\r\n\r\n' +  b'\r\n')
             else:
-                yield (b'--frame\r\n'
-                        b'Content-Type: image/jpeg\r\n\r\n' +  b'\r\n')
-        time.sleep(0.1)
+                try:
+                    static_frame_bytes = numpy.random.randint(0, 255, (480, 640, 3), dtype=numpy.uint8) # use a numpy arry to make a fake static fame like old TVs
+                    ret, static_frame = cv2.imencode('.jpg', static_frame_bytes)
+                    if ret:
+                        yield (b'--frame\r\n'
+                                    b'Content-Type: image/jpeg\r\n\r\n' + static_frame.tobytes() + b'\r\n') # can just do frame_to_display.toBtes here directly
+                except Exception as e:
+                    print(f"Error encoding frame: {e}")
+                    yield (b'--frame\r\n'
+                            b'Content-Type: image/jpeg\r\n\r\n' +  b'\r\n')
+        time.sleep(1 / 30)  # 30 FPS
 
 @app.route('/video_feed')
 def video_feed():

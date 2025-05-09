@@ -73,7 +73,7 @@ def listen_commands(conn, addr):      # new thread each time to listen for comma
     while process_running:
         try:
             print("[SP:] Waiting here for a command...")
-            data = conn.recv(65536)         # <- blocking, recv = "receive", app will just hang here until a command or exit is recieved
+            data = conn.recv(65536)     #   65536 bytes overkill    # <- blocking, recv = "receive", app will just hang here until a command or exit is recieved
             if not data:
                 print("[SP:] Empty payload == connection closed by client")
                 break
