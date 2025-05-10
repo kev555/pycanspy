@@ -99,6 +99,7 @@ def listen_commands(conn, addr):      # new thread each time to listen for comma
                 new_sub_thread = threading.Thread(target=send_frame_server, name=f"Sub-Thread-ClientIP-{addr[0]}", args=(conn,))
                 new_sub_thread.start()
                 server_viewing=True
+                camera_in_use = True
             elif cmd == "exit":
                 graceful_socket_shutdown(conn)  # need to close the socket from here as each listen_commands thread has it's own non-global socket object
                 exit_command = True             # gracefully exit from the inside cam_frame_loop, instead of just killing it from here

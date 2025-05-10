@@ -6,5 +6,24 @@
 <body>
     <h1>Live Video Feed</h1>
     <img src="/video_feed" width="640" height="480">
+
+    <br><br>
+    <button onclick="sendCommand('Start')">Start</button>
+    <button onclick="sendCommand('Stop')">Stop</button>
+
+    <script>
+        function sendCommand(command) {
+            fetch('/control', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ command: command })
+            })
+            .then(response => response.text())
+            .then(data => console.log(data))
+            .catch(error => console.error('Error:', error));
+        }
+    </script>
 </body>
 </html>
