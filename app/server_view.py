@@ -9,40 +9,56 @@ import datetime
 import numpy
 
 app = Flask(__name__)
-global frame_to_display
 frame_to_display = None
-lock = threading.Lock()
-
 
 # socket stuff
-server_ip = '127.0.0.1'  # or 'localhost'
-server_port = 5000         # any free port
+host = '127.0.0.1'
+port = 5000
 client_socket = None
 
-def receive_video(host, port):
-    # """Receives video frames from the client and updates frame_to_display."""
-    global frame_to_display, client_socket
-    
-    # create a socket object (does not connect to anything or open a connection yet)
-    if client_socket is None:                                               # socket doesnt exist yet
-        print("creating socket...")
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # try to create it
-
+# Create / re-create socket. If .close()'d the client_socket object reamins but the OS-level file descriptor is released (dead socket object)
+def createSocket(client_socket):
     try:
-        client_socket.connect((host, port)) # ConnectionRefusedError if not working
-        print("Connected to socket")
-        client_socket.sendall(("start_server_view" + '\n').encode())
-    except Exception as e:
-        print("no connect to socket")
+        if client_socket is None:                                          # socket doesnt exist
+            return socket.socket(socket.AF_INET, socket.SOCK_STREAM)       # create a socket object (does not connect to anything or open a connection yet)
+        elif client_socket.fileno() == -1:                                 # exists but closed file descriptor
+            return socket.socket(socket.AF_INET, socket.SOCK_STREAM)       # can't be reopend must create new one
+        else:
+            return client_socket                                           # socket exists and is open, so just return it
+    except OSError as e:                                                   # socket creation error will raise OSError
+            raise
+
+# Connect to server socket if not already connected:
+def connectSocket(client_socket):
+    try:
+        client_socket.getpeername()                     # retruns address of remote socket if connected, raises OSError not connected
+    except OSError:                                     # not connected, attempt to connect
+        max_connect_retries = 5                         # try 5 times, incase peer is busy
+        for attempt in range(max_connect_retries):
+            try:
+                client_socket.connect((host, port))     # ConnectionRefusedError if not working
+                return client_socket
+            except Exception as e:
+                print(f"Connection attempt {attempt+1} failed: {e}")
+                time.sleep(1)
+        else:
+            raise Exception( f"Failed to connect after {max_connect_retries} attempts.")
+
+
+def receive_video():
+    global frame_to_display, client_socket
+
+    client_socket = createSocket(client_socket)         # Create socket, will return a new created / re-created socket if client_socket is None
+    connectSocket(client_socket)                        # Connect socket, will directly modify the current client_socket
+    client_socket.sendall(("start_server_view" + '\n').encode())
 
     data_buffer = b""
     fourbyte_un_bigE_struct = struct.calcsize(">I") # an ">I" struct, > = big-endian (TCP/IP standard), I = unsigned int (4 bytes))
-
     try:
         while True:
             while len(data_buffer) < fourbyte_un_bigE_struct: # read at least 4 bytes before continuing, as the frame lenght size description header is at least needed
                 data_buffer += client_socket.recv(4096)
-                #print("got some data")
+
                 # sendall() in manage_camera.py can send an arbitrarily large amount of data (image frame), it doesn't have to be < 4096
                 # sendall() blocks until all data is sent, or an error occurs, even if this requires multiple .recv(4096)'s
                 # .recv() does not block until all data is recieved, it relies on OS kernel buffers between reads
@@ -77,7 +93,7 @@ def receive_video(host, port):
 
             try:
                 frame = pickle.loads(frame_data)
-                with lock:
+                with threading.Lock():
                     frame_to_display = frame
             except pickle.UnpicklingError as e:
                 print(f"Error unpickling frame: {e}")
@@ -93,7 +109,7 @@ def generate_frames():
     """Yields the current video frame for display in the browser."""
     global frame_to_display
     while True:
-        with lock:
+        with threading.Lock():
             if frame_to_display is not None:
                 try: # ret, buffer = cv2.imencode('.jpg', frame_to_display) ### NOT GOING TO NEED TO ENCODE ON THIS SIDE
                     yield (b'--frame\r\n'
@@ -127,7 +143,7 @@ def index():
 
 if __name__ == "__main__":
 
-    receive_thread = threading.Thread(target=receive_video, args=(server_ip, server_port)) # Start the frame receiving thread
+    receive_thread = threading.Thread(target=receive_video,) # Start the frame receiving thread
     receive_thread.daemon = True
     # running the thread as a daemon and letting the OS clean up the sockets if a crash happens is an acceptable solution for now, 
     # especially for prototyping / non-critical system

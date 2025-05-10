@@ -13,33 +13,30 @@ port = 5000         # any free port
 client_socket = None
 
 # Setup the subprocess manage_camera.py
-def setupSubprocess(manage_camera_process):
+def makeaSubprocess():
     try:
-        manage_camera_process = subprocess.Popen(["python", "-u", "manage_camera.py"], ) # try make subprocess
-        return manage_camera_process
+        return subprocess.Popen(["python", "-u", "manage_camera.py"], ) # try make subprocess
     except Exception as e:
-        print(f"Failed to start manage_camera.py subprocess: {e}")
-        raise
+        raise Exception("Failed to start manage_camera.py subprocess") from e
 
-# Create a socket if not already created, recreate if closed:
-# Sometimes client_socket exists but was .close()'d, the Python object reamins but the OS-level file descriptor is released, making the socket object useless
+# Create / re-create socket. If .close()'d the client_socket object reamins but the OS-level file descriptor is released (dead socket object)
 def createSocket(client_socket):
     try:
-        if client_socket is None:                                               # socket doesnt exist
-            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)   # create a socket object (does not connect to anything or open a connection yet)
-        elif client_socket.fileno() == -1:                                      # exists but closed file descriptor
-            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)   # can't be reopend must create new one
-        return client_socket
-    except OSError as e:                                                        # For socket creation will always be OSError
+        if client_socket is None:                                          # socket doesnt exist
+            return socket.socket(socket.AF_INET, socket.SOCK_STREAM)       # create a socket object (does not connect to anything or open a connection yet)
+        elif client_socket.fileno() == -1:                                 # exists but closed file descriptor
+            return socket.socket(socket.AF_INET, socket.SOCK_STREAM)       # can't be reopend must create new one
+        else:
+            return client_socket                                           # socket exists and is open, so just return it
+    except OSError as e:                                                   # socket creation error will raise OSError
             raise
 
 # Connect to server socket if not already connected:
-def connectSocket(client_socket, host, port):
-    max_connect_retries = 5                             # try 5 times, incase peer is busy
+def connectSocket(client_socket):
     try:
         client_socket.getpeername()                     # retruns address of remote socket if connected, raises OSError not connected
-        return client_socket
     except OSError:                                     # not connected, attempt to connect
+        max_connect_retries = 5                         # try 5 times, incase peer is busy
         for attempt in range(max_connect_retries):
             try:
                 client_socket.connect((host, port))     # ConnectionRefusedError if not working
@@ -53,23 +50,20 @@ def connectSocket(client_socket, host, port):
 
 def send_command(command):
     global client_socket
-    global manage_camera_process 
-    global host, port
+    global manage_camera_process
 
     try:
         if manage_camera_process is None or manage_camera_process.poll() is not None:   # If no subprocess yet OR it's dead (.poll() returns None if running, exit code if dead)
-            manage_camera_process = setupSubprocess(manage_camera_process)
+            manage_camera_process = makeaSubprocess()
         
-        # Create socket:
-        client_socket = createSocket(client_socket)
-        # Connect socket:
-        connectSocket(client_socket, host, port)
+        client_socket = createSocket(client_socket)                 # Create socket, will return a new created / re-created socket if client_socket is None
+        connectSocket(client_socket)                                # Connect socket, will directly modify the current client_socket
 
         # Send command through socket:
         max_send_retries = 3
         for attempt in range(max_send_retries):
             try:
-                client_socket.sendall((command + '\n').encode())                        # this could block GUI if network congestion or reciever OS buffer full, needs to be async
+                client_socket.sendall((command + '\n').encode())    # this could block GUI if network congestion or reciever OS buffer full, needs to be async
                 break
             except Exception as e:
                 print(f"Send attempt {attempt+1} failed: {e}")
@@ -79,7 +73,8 @@ def send_command(command):
                 f"Failed to send command after {max_send_retries} attempts.")
 
     except Exception as e:
-        print('Caught Exception', e)
+        print("Caught Exception:", e, "Original cause:", e.__cause__)
+        
 
 
 def do_exit():
@@ -120,7 +115,7 @@ def start_recording():
 def stop_recording():
     send_command("stop_record")
 def start_showing():
-    send_command("show_stream")  # € to see raw bytes
+    send_command("show_stream")
 def stop_showing():
     send_command("hide_stream")
 def start_server_view():
