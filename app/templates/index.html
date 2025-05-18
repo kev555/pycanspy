@@ -11,6 +11,8 @@
     <button onclick="sendCommand('Start')">Start</button>
     <button onclick="sendCommand('Stop')">Stop</button>
 
+    <div id="status">Waiting for connection...</div>
+
     <script>
         function sendCommand(command) {
             fetch('/control', {
@@ -24,6 +26,21 @@
             .then(data => console.log(data))
             .catch(error => console.error('Error:', error));
         }
+
+        function checkClientStatus() {
+            fetch('/client_status')
+            .then(response => response.json())
+            .then(data => {
+                if (data.connected === true) {
+                    document.getElementById("status").innerText = "Client Connected!... Press Start when you're ready to request PC to start streaming";
+                } else {
+                    document.getElementById("status").innerText = "Waiting for connection... Pressing Start won't do anything yet";
+                }
+            })
+            .catch(err => console.error(err));
+        }
+
+    setInterval(checkClientStatus, 1000); // Poll every 1 second
     </script>
 </body>
 </html>

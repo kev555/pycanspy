@@ -1,0 +1,333 @@
+
+For remote viewing the video data must go from Client PC -> RemoteServer -> Web Browser/Mobile App.
+
+Communiction channel method / protocols between each need to be decided:
+Comms channel for:  PC              <->     RemoteServer
+Comms channel for:  RemoteServer    <->     Web Browser/Mobile App
+Stream channel for: PC              ->      RemoteServer
+Stream channel for: RemoteServer    ->      Web Browser/Mobile App
+
+
+Comms / Stream options for Client PC <-> Remote Server:
+
+PC <-> RemoteServer signalling, needed for sending a signal to the PC app to start streaming video up to RemoteServer
+Obviously there's a high chance PC is behind NAT so initation of socket must be made from PC.
+Originally my idea to circumventat NAT here was to establish/maintain a reverse ssh tunnel with the RemoteServer, any time the PC app was run.
+A user could then load the Webapp and message the PC app through the server directly to the PC, as if they were on the same machine.
+"Local port forwarding, or SSH tunneling, allows a user to connect to a service on a remote server, as if it were running locally"
+So kind of like direct RemoteServer -> PC signalling and socket establishment, even around NAT.
+
+This would allow me to re-use the python socket code from manage_camera.py local connection with the gui.py (socket.socket(socket.AF_INET..)).
+Also to stream video data direcelty over the socket too, as beofre locally (ssh encryption + TCP encapsulation/streaming would add a significat delay of course)
+Apart from reusing code I just thought it would be cool and interesting to implement, having played with SSH tunnelling before.
+
+However, creating and managing a reverse SSH tunnel from Python turned out to be very difficult to even prototype.
+The main Python library for SSH, "paramiko", seems to require a lot of low-level setup and testing just to establish a basic tunnel. 
+It's not nearly as automated as I'd expected.
+
+There was a simpler Python wrapper called sshtunnel (SSHTunnelForwarder), built on top of paramiko, but it only supports forward tunnels.
+But using this from the PC means the RemoteServer can’t bind to a port that routes traffic back to the PC, 
+forward SSH tunnels only allow the client (PC) to bind locally and forward traffic out — not the other way around, ie:
+PC-app-socket.bind((localhost, some_port)) -> PC-ssh:22 -> RemoteServer-ssh:22 -> RemoteServer:some_port
+A forward tunnel in the other direction wouldn't work because of NAT, as the RemoteServer ssh client has to initiate to PC ssh client:
+RemoteServer-app-socket.bind((localhost, some_port)) -> RemoteServer-ssh:22 -> PC-ssh:22 -> RemoteServer:some_port
+
+Another option is to simply use the built in ssh client of the PC's operating system to set up a reverse tunnel and launch that off a python subprocess
+But this relies on the OS ssh tool = platform-dependent and difficult to manage crashes, reconnections, error handling, and for different OSs.
+Although the basic setup commands for standard OS's built in SSH clients are very simple and standardised, see Footnote 1.
+
+Reminder, this is all at raw TCP level.
+
+Conclusion?
+SSH tunneling is overkill for this case. It interesting and sometimes very automated but it's "more appropriate when working with an existing applications,
+that can’t be easily modified, and where connections need to be bridged at the transport / network level instead." 
+(transport level in TCP/UDP, nwtwork level would be IPv4 - i.e. thats a VPN level).
+There’s no need to try delegatle comms and data transfer to the transport level control, especially since I'm writing both ends of the code, 
+thus can implement it at the app level with more efficency and suitable protocol(s).
+
+#############
+Comms / Stream options and plans for PC <-> RemoteServer:
+
+Just outward initiate with raw TCP socket from the PC -> RemoteServer, then use this socket for comms in both directions (no problems from NAT)
+For security, these sockets can be wrapped with pythons ssl package then unwrapped on the RemoteServer.
+
+Raw TCP socket vs HTTP websocket:
+Http websockets could be used instead of raw TCP sockets (they're basically TCP sockets tunneled through http)
+They offer the following main benifits in this situation:
+1. Can use the TLS certificate of the domain directly with securece websockets (wss), no need to use python ssl packages etc
+2. Firewall / proxy passing, https on 443 is always allowed, whereas raw TCP, even if on 443 may be blocked
+3. Built-in message framing and event-style API.
+4. Ability to communicate with a Browser client (JS) later on
+
+Benifit 4 doesn't seem very relevant at this stage, also WebRTC would be more ideal for App -> Browser anyway,
+Benifit 3 could be helpful but message framing has already been written for the raw tcp socket
+Benifit 2 also not very relevant as I control the server thus can open specific ports easily (maybe another way this benifts I dont realise yet?)
+Benifit 1 does seem useful, it might be streamlined auth solution than another cert or indivduaal auth for apps.
+Anyway the benifits of websockets are mostly for Server <-> Browser, mostly for allowing bi-directional, persistens comms channel
+So websockets will for sure come into use at Server <-> Browser design.
+
+PC -> RemoteServer Video data transport:
+Currently I'm just using raw TCP and manual compression / decompression and reconsttitution of the video stream frame by frame.
+A high level protocol would be better, preferably one which uses UDP instead of TCP, as speed is more important than consistency.
+UDP streaming is very difficult to implement manually so for sure need a higher level protocol.
+There are a number of streaming protocols available. It's been quite confusing understanding the different options.
+
+Summary of research on Streaming Protocols:
+There are two base protocols for media streaming - RTP and RTMP 
+
+RTP vs RTMP — Core Differences
+Feature              | RTP (Real-time Transport Protocol)       | RTMP (Real-Time Messaging Protocol)
+---------------------+------------------------------------------+--------------------------------------------
+Designed For         | Low-latency, real-time audio/video       | Streaming media (e.g., live broadcasts)
+Transport Protocol   | Typically UDP (can use TCP/TLS if needed)| Always TCP
+Latency              | Very low                                 | Moderate (with buffering)
+Media Format         | Raw media packets (audio/video separate) | Multiplexed media (audio, video, control)
+Signaling Layer      | Separate (e.g., SIP, RTSP)               | Built-in
+Encryption           | SRTP (optional)                          | RTMPS (RTMP over TLS)
+NAT Traversal        | Needs help (STUN/TURN/WebRTC)            | None built-in (relies on TCP)
+Use Cases            | VoIP, video calls, IP cameras, WebRTC    | OBS to YouTube/Twitch/Facebook Live
+Standardization      | Open standard (IETF)                     | Originally proprietary (Adobe), now partly open
+
+RTP is ideal for real-time, interactive media (calls, conferencing, surveillance) where latency must be minimal.
+RTMP is better for live streaming to platforms where moderate latency is acceptable, but reliability and compatibility are crucial.
+RTP is perfectly fine for my app.
+
+There are a number of protocols to layer on top of RTP for connection management, session signaling and encryption.
+Firstly decide if the video data itself needs encrypted or just the connection management and session signaling etc. (auth, socket managment etc).
+Obviously encrypting the video data will be slower, so this should be avoided for live video if safe
+
+Encryption base:
+If video data does not need to be encrypted, just use plain RTP over UDP as a base
+If video data itself does need to be encrypted, use SRTP as a base, which is just encrypted RTP over UDP
+
+**The control wrapper protocols can be in a separate channel, ie. standard version of RTSP uses TCP for signaling and UDP for media. This means, 
+it's possible to use an encrypted TCP channel for connection management and session signaling and a separate unencrypted UDP channel for video stream.
+This offers a good balance between security and speed. This is RTSP and RTSPS.
+
+Control wrapper protocols for RTP:
+RTSP (Real-Time Streaming Protocol) - unencrypted RTSP over TCP for signaling, and unencrypted RTP over UDP for media 
+RTSPS (Secure Real-Time Streaming Protocol) - encrypted RTSP over TCP for signaling, and unencrypted RTP over UDP for media 
+
+Control wrapper protocols for SRTP:
+WebRTC (Web Real-Time Communication)
+More info: It includes session establishment but not signalling, a third party protocol/library such as socket.io is usually used for that
+Does have built-in NAT traversal, which opens the possibility of direct p2p streaming, but this also introduces additional complexity (e.g., ICE, STUN, TURN)
+Everything is encrypted as standard.
+For PC->RemoteServer WebRTC is too complex.
+But I will definitly use later in development for peer-to-peer connections.
+I've used before and it's very cool, although complex.
+
+So RTSP / RTSPS is the way forward. Maybe start with RTSP then upgrade to RTSPS later.
+
+Media Streaming Protocols re-cap / breakdown:
+No | Protocol             | Subprotocols         | Encryption         | Transport                        | Real-time  | Common Use Case
+---|----------------------|----------------------|--------------------|----------------------------------|----------- |---------------------------------------
+1  | RTP                  | ❌                   | ❌ No              | UDP                              | ✅ Yes    | Raw media streaming
+2  | SRTP                 | RTP                  | ✅ Yes             | UDP                              | ✅ Yes     | Secure VoIP/video over UDP
+3  | RTSP                 | RTP                  | ❌ No              | TCP (ctrl) + UDP (media)         | ✅ Yes     | Camera feeds, IP surveillance
+4  | RTSPS                | RTP                  |  ~ Control only     | TCP (TLS) + UDP or TCP (media)   | ✅ Yes     | Secure RTSP with flexible transport
+5  | RTP over TLS         | RTP                  | ✅ Yes             | TCP                              | ⚠️ Limited | When UDP is blocked
+6  | RTMP                 | ❌                   | ❌ No              | TCP                              | ⚠️ Low-latency  | Live video to CDN/streaming server
+7  | RTMPS                | RTMP                 | ✅ Yes             | TCP (TLS)                        | ⚠️ Low-latency   | Secure live streaming
+8  | WebRTC               | SRTP, DTLS           | ✅ Yes             | UDP (TCP fallback via TURN)      | ✅ Yes           | Peer-to-peer browser/app comm
+
+
+
+
+#############
+Comms / Stream options and plan for RemoteServer <-> Browser:
+
+Web infrastructure was built HTTP-centric: proxies, load balancers, etc. are all optimized for HTTP(S).
+HTTP style schamitcs is "request, respose, close".
+
+Some apps and web apps need real bi-directional communication over the web, but:
+Browsers cannot access raw TCP sockets. A browser's JS Engine is sandboxed for security, it can't bind to a system port directly.
+Some Server's firewalls/routers block all non-HTTP traffic (common in corporate, school, or enterprise networks), 
+and may also only allow specific ports eg. 80 (HTTP), 443 (HTTPS)
+Because of the "request, respose, close" design a client had to continuously poll the server for updates, very inefficent 
+
+HTTP however has evolved to include some bidirectional methods which are widly supported these days.
+Such as adding keep-alive in HTTP 1.1 in 1999, meaning the tcp socket doesn't close after every request.
+This keep-alive feature allowed "Long Polling", so although the client did have to keep checking first "request, respose",
+the "close" part was removed, keeping the tcp socket alive, no need to re-creat on every check
+
+This was still a bit inefficent as the client had to keep initating checks due to "request, respose" nature of http.
+So eventually Websockets were released as an upgrade to http, Websockets are truly bi-directional.
+
+[Server-Sent Events (SSE) was released. This is conceptually like reverse long polling.]
+[The response is left open and the server can push update to the client, but only one way server -> client. Niche use cases.]
+
+WebSockets:
+Are truly bi-directional
+- a full-duplex, persistent channel between client and server, allowing:
+- the server to instantly push data to the browser without waiting for a request,
+- the client to send messages at any time
+- all over a single, long-lived TCP connection (upgraded from HTTP)
+
+"upgraded" maybe "downgraded" more suitable.
+Websckets use the already established TCP connection the browser had established with the http request.
+They strip back some of the http features and provide a persistent TCP socket (ie. they remove the "request, respose, close" mechanisms)
+So they provide TCP style functionality over HTTP. And thus can basically sneak a persistent, bidirectional comms channel through 
+systems that were designed for HTTP style comms, e.g. browsers, proxies, firewalls, CDNs, etc.
+
+"WebSockets makes persistent communication possible within the constraints of the web — a clever workaround using an HTTP-compatible handshake."
+WebSocket does not perform a second TCP handshake, justs uses the first.
+
+Nice custom comparison and dtails of all options for http comms at Footnote 2
+
+
+Current situation:
+As of now the control / signaling is done simmply with basic REST architecture (Flask routes/endpoints)
+This is ok for the limited communication features as of now, which are:
+1. Server -> signal to Web Client (that PC is ready)
+2. Web Client -> signal to Server (either "Start" or "Stop" the streaming)
+
+This is not truly bi-directional though. It's indirectly bi-directional.
+Not real even remotly real time. And client must always initate, server cannot initiate or re-initiate connection or cehecks.
+
+Browser/Client -> RemoteServer lisening endpoint    (PUSH)  (e.g. POST /command)
+Browser/Client <- RemoteServer publishing endpoint  (PULL)  (e.g. GET /status , checking repeatedly)
+
+
+** The JS in the index.html used for the browser is GET /status is currently just constantly polling the endpoint with a new connection each time
+eg. http 1.0 style... At least first upgrade this to long polling...
+Howver implementent WebSockets for this RemoteServer <-> Browser comms is the best option ultimatilly.
+
+
+###
+Stream options:
+Again, browsers cannot open arbitrary TCP/UDP ports directly.
+
+The only protocols that modern browsers accept — meaning they can natively use via JavaScript or HTML APIs — are:
+Protocols: HTTP / HTTPS, WebSocket, WebRTC, Data URI, Blob URI and file://
+Handlers: "mailto:" and "tel:"
+
+Not Accepted by modern browsers:
+- Raw TCP or UDP sockets
+- SIP, RTP, RTSP, SSH, RTMP, not even FTP anymore (modern browsers dropped support)
+
+Streaming video can only be done over:
+- HTTP/TCP
+- WebSocket/TCP
+- WebRTC/UDP
+
+So the options for browser-accepted video streaming protocol sets are:
+| **Protocol**                        | **Transport** | **Use Case**                                    | **Notes**                             |
+| ----------------------------------- | ------------- | ----------------------------------------------- | ------------------------------------- |
+| HTTP(S) + MJPEG via HTTP Multipart  | TCP           | Simple webcam streams                           | Old but still supported               |
+| HTTP(S) + HLS (HTTP Live Streaming) | TCP           | Live & VOD streaming (especially on Safari)     | Chunk-based                           |
+| HTTP(S) + MPEG-DASH                 | TCP           | Adaptive streaming (especially on Chrome)       | Chunk-based                           |
+| WebSocket + custom video format     | TCP           | Custom low-latency solutions                    | Requires manual decoding              |
+| WebRTC                              | UDP           | Low-latency, real-time peer-to-peer/video calls | Native support in all modern browsers |
+
+
+Current implementation and it's explination:
+
+Using MJPEG via HTTP Multipart.
+This is a simple streaming method where each frame is sent as a separate JPEG image in a single HTTP response — commonly used for webcam feeds. 
+Supported by all major browsers without extra plugins.
+Use the MIME type: multipart/x-mixed-replace to notify the browser of protocol being used.
+
+Endpoint for publishing the the video feed:
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+First the client sends a request (to /index.html and thus /video_feed), and the server keeps responding with frames down the same open socket
+"multipart/x-mixed-replace" MIME type tells the browser to keep the connection open and replace the image with each new frame ech time, so a moving series of images
+But how does the browser know where one frame ends and another begings among the stream of tcp packets?
+The key is in setting: mimetype='multipart/x-mixed-replace; boundary=frame'
+This MIME type tells the browser: "You’re going to receive a continuous stream of parts, and each part is separated by a specific boundary string - in this case "frame""
+Each frame is preceded by the boundary --frame\r\n and the Content-Type header for a JPEG image
+Using \r\n (CRLF aka. carriage return + line feed) is standard and required in HTTP for line endings, including the end of headers and the structure of multipart bodies.
+
+Header lines - each HTTP header must end with \r\n
+End of header block - end with an empty line: \r\n\r\n (signals "headers are done; body starts now")
+Multipart bodies - each part in multipart/* must use \r\n for boundary lines and headers
+Request line/Status line - even the first line (e.g., GET / HTTP/1.1) ends with \r\n
+
+So the stream looks like this:
+
+--frame
+Content-Type: image/jpeg
+Content-Length: 123456
+
+<binary JPEG data>
+
+--frame
+Content-Type: image/jpeg
+Content-Length: 123789
+
+<next JPEG>
+
+... 
+The browser can now easily reconstruct frames, regardless of how many TCP packet each frame was split between.
+
+
+Other options (HLS and DASH)compared to this:
+
+Feature            | HLS                                          | MPEG-DASH                                    | MJPEG multipart
+------------------|-----------------------------------------------|-----------------------------------------------|------------------------------
+Protocol           | HTTP                                         | HTTP                                          | HTTP
+Transport          | TCP                                          | TCP                                           | TCP
+Format             | TS / fMP4 chunks + .m3u8 playlist            | fMP4 segments + MPD manifest                  | JPEG frames via multipart/x-mixed-replace
+Compression        | Across frames (I/P/B frames)                 | Across frames (I/P/B frames)                  | Per-frame only (intra-frame)
+Latency            | Medium–High (~3–10s)                         | Medium–High (~3–10s)                          | Low (almost real-time)
+Browser Support    | Native in Safari; hls.js for others          | Needs JS player (e.g., dash.js)               | Native in all browsers via <img src>
+Use Case           | Live & adaptive streaming                    | Adaptive streaming                            | Webcam streams, simple feeds
+Pros               | Adaptive quality, CDN support, bandwidth efficient, standard  | Open standard, highly configurable, bandwidth efficient | Simple, no JS, low latency
+Cons               | High latency, chunk-based, JS for support    | No native support, JS needed                  | High bandwidth, no audio, no GOP compression
+
+
+
+Remember, none of these include built-in signaling.
+
+They don't provide a mechanism for clients and servers to negotiate connection, metadata, session control, etc.
+They're one-way: server → client (pull-based via HTTP).
+The player just downloads media segments and plays them — no interaction channel is included.
+So for signaling ie. to start/stop streams, change camera, etc. will again need separate channel such as:
+REST APIs (currently using)
+WebSockets
+WebRTC Data Channels (for WebRTC use cases)
+Server-Sent Events (limited)
+
+
+Perhaps could just pass the TCP packets diectly to the browser, and decode there, instaed of decoding / encoding twice.
+Could this be done in javascript? Would it improve or reduce speed / bandwith usage?
+Would I lose importand built in features of these protocols?
+
+
+################
+Footnote 1 - Basic setup commands for standard OS's built in SSH clients:
+
+Simple command to open ssh tunnels manually:
+reverse (aka remote)
+ssh -R 6661:localhost:6661 kev@146.190.96.130 -N
+forward (aka local)
+ssh -L 6661:localhost:6661 kev@146.190.96.130 -N
+
+To see if ssh daemon is listening on the necessary port:
+sudo netstat -tulnp | grep ssh
+
+also make sure the app is listening on the recieving side:
+sudo netstat -tulnp | grep pyth
+
+Simple netcat command to quickly test the tunnels:
+To listen on recieving:
+nc -l -p 7777
+To send a message:
+echo "Hello from RemoteServer or PC" | nc localhost 7777
+
+More description here from old notes:
+
+
+###########
+Footnote 2 - Nice custom comparison and details of all options for http comms
+Method                   | Open Socket?                                         | Real-time?           | Bi-directional?      | Efficient?                             | Notes
+------------------------|------------------------------------------------------|----------------------|----------------------|----------------------------------------|---------------------------------------------------------------
+HTTP/1.0                | ❌ (closes after each response)                      | ❌                   | ✅ (request only)     | ✅ (for simple requests)                | Connection closes after each response
+HTTP/1.1 (Keep-Alive)   | ✅ (persistent TCP connection for multiple req/res)  | ❌                   | ✅ (request only)     | ✅ (reuses connection, low overhead)    | Multiple sequential requests without reconnecting
+Long Polling (HTTP/1.1) | ⏳ (socket held open until response, then reopens)   | ✅ (pseudo real-time) | ✅ (request only)     | ⚠️ (wait time & reopen add overhead)   | Client waits on long-held request; reconnects on each update
+SSE (HTTP/1.1)          | ✅ (single long-lived HTTP response)                | ✅ (push capable)     | ❌ (server → client)  | ✅ (low overhead, efficient)            | Server pushes events over open connection using text/event-stream
+WebSockets              | ✅ (full duplex TCP socket)                          | ✅ (real-time)        | ✅ (bi-directional)    | ✅✅ (low latency, minimal overhead)     | True full-duplex communication after initial HTTP handshake
+

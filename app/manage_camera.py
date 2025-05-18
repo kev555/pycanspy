@@ -10,7 +10,7 @@ import pickle
 import struct
 import sys
 
-
+# Control vars:
 process_running = True
 show_stream = False
 recording = False
@@ -18,34 +18,84 @@ camera_in_use = False
 server_viewing = False
 exit_command = False
 
+# OpenCV objs
 writer = None
 webcam_obj = None
 
-host = '127.0.0.1'  # or 'localhost'
-port = 5000         # any free port
-server_socket = None
-
+# Saving video
+clip_interval_secs = 5
+# make sure director for saving videos clips exists:
 script_directory = os.path.dirname(os.path.abspath(__file__))
 output_subdirectory = "webcam_recordings"
 output_dir = os.path.join(script_directory, output_subdirectory)
 os.makedirs(output_dir, exist_ok=True)
-clip_interval_secs = 5
 
-frame_queue = queue.Queue(maxsize=3000)
-# queue.Queue(maxsize=200) = 200 fames max
+# Network
+local_host = '127.0.0.1'        # For listening to GUI commands
+local_port = 5000               # For listening to GUI commands
+#server_host = '146.190.96.130' # VPS's public IP
+server_host = '127.0.0.1'       # Use this if running server_process.py locally for testing
+server_recieve_port = 5001      # VPS display port (1705) is different from recieve port (5001)
+server_socket = None
+client_socket = None
+
+frame_queue = queue.Queue(maxsize=300)
+# queue.Queue(maxsize=300) = 300 fames max
 # if frames are being produced MUCH faster than being consumed the Queue will fill up 
 # "except queue.Full" be raised when trying to .put another frame on the queue (in cam_frame_loop)
 # although this won't fail it will cause frames to be dropped from the remote viewing
 # with 300 frames Queue and ~30 fps camera == 10 delay before starting to drop frames
 
-def listen_connections():
+
+# Create / re-create socket. If .close()'d the client_socket object reamins but the OS-level file descriptor is released (dead socket object)
+def createSocket(client_socket):
+    try:
+        if client_socket is None:                                          # socket doesnt exist
+            return socket.socket(socket.AF_INET, socket.SOCK_STREAM)       # create a socket object (does not connect to anything or open a connection yet)
+        elif client_socket.fileno() == -1:                                 # exists but closed file descriptor
+            return socket.socket(socket.AF_INET, socket.SOCK_STREAM)       # can't be reopend must create new one
+        else:
+            return client_socket                                           # socket exists and is open, so just return it
+    except OSError as e:                                                   # socket creation error will raise OSError
+            raise
+
+# Connect to server socket if not already connected:
+def connectSocket(client_socket):
+    try:
+        client_socket.getpeername()                     # retruns address of remote socket if connected, raises OSError not connected
+    except OSError:                                     # not connected, attempt to connect
+        max_connect_retries = 1                         # try 5 times, incase peer is busy
+        for attempt in range(max_connect_retries):
+            try:
+                client_socket.connect((server_host, server_recieve_port))     # ConnectionRefusedError if not working
+                return client_socket
+            except Exception as e:
+                print(f"Connection attempt {attempt+1} failed: {e}")
+                time.sleep(1)
+        else:
+            raise Exception( f"Failed to connect after {max_connect_retries} attempts.")
+
+
+def VPS_master_socket_reverse_listener():
+    global client_socket
     global show_stream, recording, writer, camera_in_use, process_running, exit_command
-    global host, port, server_socket
+    global local_host, local_port, server_socket
+    
+    try:
+        client_socket = createSocket(client_socket)                 # Create socket, will return a new created / re-created socket if client_socket is None
+        connectSocket(client_socket)                                # Connect socket, will directly modify the current client_socket
+        threading.Thread(target=listen_commands, name=f"Thread-ClientIP-{999}", args=(client_socket, 9999)).start()
+    except Exception as e:
+        print("Caught Exceptionnnnn44444:", e, "Original cause:", e.__cause__)
+    
+def local_master_socket_listener():
+    global show_stream, recording, writer, camera_in_use, process_running, exit_command
+    global local_host, local_port, server_socket
     
     # Socket initialization - this is the permenant gateway socket for all connections
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # = "make a socket object which will use the network stack (AF_INET), specifically TCP for transport (SOCK_STREAM), not UDP"
-    server_socket.bind((host, port))    # bind to the socket
+    server_socket.bind((local_host, local_port))    # bind to the socket
     server_socket.listen(1)             # listen to the socket, single connection; can be expanded
     
     while process_running:        # listen for new connections, creating new sockets for each      
@@ -57,19 +107,21 @@ def listen_connections():
         except Exception as e:
             print(f"Problem accepting connection: {e}")
             break
-        print("[SP:] Client connected: ", conn, addr)
         
-        new_thread = threading.Thread(target=listen_commands, name=f"Thread-ClientIP-{addr[0]}", args=(conn, addr)) 
+        print("[SP:] Client connected: ", conn, addr)
+        time.sleep(1)
+        
+        threading.Thread(target=listen_commands, name=f"Thread-ClientIP-{addr[0]}", args=(conn, addr)).start()
         # Create a new thread for each connection, and name it by IP
         # there is multiple conn objects so can't use a global, just pass new one to thread each time with args=conn
-        new_thread.start()
 
     print("[SP:] listen_connections finished")
 
 def listen_commands(conn, addr):      # new thread each time to listen for commands on each connection socket obj (conn)
     global writer, camera_in_use, exit_command, process_running, webcam_obj
-    global host, port, server_socket, show_stream, output_dir, clip_interval_secs
+    global local_host, local_port, server_socket, show_stream, output_dir, clip_interval_secs
     global server_viewing
+    
     while process_running:
         try:
             print("[SP:] Waiting here for a command...")
@@ -94,9 +146,8 @@ def listen_commands(conn, addr):      # new thread each time to listen for comma
                 # send over the same (conn) TCP connection, (TCP is duplex), no need to creat a new socket / TCP connection
                 # two (or more) threads can safely read from the same queue.Queue in Python
                 # there is multiple conn objects so can't use a global conn, just pass new one to thread each time with args=conn
-
-                print("[SP:] send_frame_server, conn obj:", conn)
-                new_sub_thread = threading.Thread(target=send_frame_server, name=f"Sub-Thread-ClientIP-{addr[0]}", args=(conn,))
+                print("[SP:] send_frame_server1111111, conn obj:", conn)
+                new_sub_thread = threading.Thread(target=send_frame_server, name=f"Sub-Thread-ClientIP-{999}", args=(conn,))
                 new_sub_thread.start()
                 server_viewing=True
                 camera_in_use = True
@@ -116,7 +167,7 @@ def listen_commands(conn, addr):      # new thread each time to listen for comma
 
 
 def send_frame_server(conn):
-    print("[SP:] send_frame_server, conn obj:", conn)
+    print("[SP:] send_frame_server222222222, conn obj:", conn)
     while server_viewing:
         try:
             frame = frame_queue.get(timeout=1)                  # Get frame from queue, with timeout
@@ -126,9 +177,9 @@ def send_frame_server(conn):
                 raise RuntimeError("Failed to encode frame")
             print("encoded: ", sys.getsizeof(encoded_frame))    # Size of frame in bytes: 16296 ! -> Much better for network transmission!
             
-            frame_bytes = pickle.dumps(encoded_frame)           
+            frame_bytes = pickle.dumps(encoded_frame)
             # Serialize the frame into bytes
-            frame_size_desc = struct.pack(">I", len(frame_bytes))      
+            frame_size_desc = struct.pack(">I", len(frame_bytes))
             # Send a describtion of the size of the frame_bytes to be transmitted 
             # Use an ">I" struct: > = big-endian (TCP/IP standard), I = unsigned int (4 bytes)
             
@@ -147,7 +198,7 @@ def send_frame_server(conn):
 
 def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
     global writer, camera_in_use, exit_command, process_running, webcam_obj
-    global host, port, conn, server_socket, show_stream, output_dir, clip_interval_secs
+    global local_host, local_port, conn, server_socket, show_stream, output_dir, clip_interval_secs
     global frame_queue
 
     print("[SP:] Opening webcam.")
@@ -218,6 +269,8 @@ def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
                 clean_camera()
                 camera_in_use = False
                 break
+        
+        time.sleep(.2) # leave it at 5 frames per second so as not to exhaust VPS resources during testing
     
     # end camera_in_use
     print("[SP:] cam_frame_loop finished")
@@ -225,7 +278,7 @@ def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
 
 def clean_camera():
     print("[SP:] Cleaning up")
-    global host, port, conn, server_socket, writer, webcam_obj
+    global local_host, local_port, conn, server_socket, writer, webcam_obj
     
     if webcam_obj:              # Try to release camera
         webcam_obj.release()
@@ -264,7 +317,11 @@ def graceful_socket_shutdown(conn):
 
 
 if __name__ == "__main__":
-    threading.Thread(target=listen_connections, daemon=True).start()    # <- Non-Blocking, thread to listen on socket and relay the commands
+    # local socket thread:
+    threading.Thread(target=local_master_socket_listener, daemon=True).start()
+    # VPS socket thread:
+    threading.Thread(target=VPS_master_socket_reverse_listener, daemon=True).start()
+    
     while process_running:
         if camera_in_use:
             cam_frame_loop()        # <- Blocking, camera must be turned off first or process_running loop can't end

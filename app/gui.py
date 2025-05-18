@@ -9,7 +9,7 @@ manage_camera_process = None
 
 # socket stuff
 host = '127.0.0.1'  # or 'localhost'
-port = 5000         # any free port
+port = 5000        # any free port
 client_socket = None
 
 # Setup the subprocess manage_camera.py
@@ -18,6 +18,7 @@ def makeaSubprocess():
         return subprocess.Popen(["python", "-u", "manage_camera.py"], ) # try make subprocess
     except Exception as e:
         raise Exception("Failed to start manage_camera.py subprocess") from e
+
 
 # Create / re-create socket. If .close()'d the client_socket object reamins but the OS-level file descriptor is released (dead socket object)
 def createSocket(client_socket):
@@ -30,6 +31,7 @@ def createSocket(client_socket):
             return client_socket                                           # socket exists and is open, so just return it
     except OSError as e:                                                   # socket creation error will raise OSError
             raise
+
 
 # Connect to server socket if not already connected:
 def connectSocket(client_socket):
@@ -69,13 +71,11 @@ def send_command(command):
                 print(f"Send attempt {attempt+1} failed: {e}")
                 time.sleep(1)
         else:
-            raise Exception(
-                f"Failed to send command after {max_send_retries} attempts.")
+            raise Exception(f"Failed to send command after {max_send_retries} attempts.")
 
     except Exception as e:
         print("Caught Exception:", e, "Original cause:", e.__cause__)
-        
-
+    
 
 def do_exit():
     global manage_camera_process, client_socket, GUI_window
