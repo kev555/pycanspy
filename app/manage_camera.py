@@ -170,18 +170,21 @@ def send_frame_server(conn):
     print("[SP:] send_frame_server222222222, conn obj:", conn)
     while server_viewing:
         try:
-            frame = frame_queue.get(timeout=1)                  # Get frame from queue, with timeout
-            print("raw: ", sys.getsizeof(frame))                # Size of frame in bytes: 921799 !!!!!!?
+            frame = frame_queue.get(timeout=1)                  # Get frame from queue, with timeout of 1 is enough?
+
             success, encoded_frame = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50]) # encode it now, before transmitting!!
             if not success:
                 raise RuntimeError("Failed to encode frame")
-            print("encoded: ", sys.getsizeof(encoded_frame))    # Size of frame in bytes: 16296 ! -> Much better for network transmission!
             
-            frame_bytes = pickle.dumps(encoded_frame)
-            # Serialize the frame into bytes
-            frame_size_desc = struct.pack(">I", len(frame_bytes))
-            # Send a describtion of the size of the frame_bytes to be transmitted 
-            # Use an ">I" struct: > = big-endian (TCP/IP standard), I = unsigned int (4 bytes)
+            # Serialize the jpg frame into bytes:
+            # frame_bytes = pickle.dumps(encoded_frame)
+            # NO, Just use .tobytes(), pickle is unnecessary
+            frame_bytes = encoded_frame.tobytes()
+            
+            # Send a description of the size of the frame_bytes to be transmitted
+            # Use an "I" struct which is unsigned int (4 bytes)
+            # Use type ">" for big-endian (or "!" for "network byte order" (TCP/IP standard), also big endian)
+            frame_size_desc = struct.pack(">I", len(frame_bytes))  
             
             conn.sendall(frame_size_desc + frame_bytes)      
             # Send the first 4 bytes notifying the size of the frame data, then the frame data itslef

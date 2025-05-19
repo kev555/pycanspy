@@ -108,9 +108,11 @@ def send_command_recieve_video(conn, addr):
                     data_buffer = data_buffer[toal_frame_size_as_int:]
 
                     try:
-                        frame = pickle.loads(frame_data)
+                        # frame = pickle.loads(frame_data) # No. It now uses the simpler .tobytes() in manage camera, 
+                        # now no need to unpickle it into a frame and then tobytes() the fame inside generate_frames()... 
+                        # Just pass the frame as bytes deirectly to the multipart: (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display + b'\r\n') 
                         with lock:
-                            frame_to_display = frame
+                            frame_to_display = frame_data # just frame_data directly now
                     except pickle.UnpicklingError as e:
                         print(f"Error unpickling frame: {e}")
                         continue
@@ -126,12 +128,9 @@ def send_command_recieve_video(conn, addr):
 is_client_connected = None
 
 def generate_frames():
-    # """Yields the current video frame for display in the browser."""
-    
-    # need a real dummy frame as a placeholder, because if just an empty frame, after clicking start - a page refresh was necessary to actaully start displaying, why?
-    # "Browsers expect MJPEG streams to begin with a valid JPEG frame. If the stream sends blank or malformed data up front, 
-    # the browser may not "start" the display at all until it is refreshed and gets a valid frame."
-    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)  # black 640x480 frame
+    # needs a placeholder, if just an empty frame a page refresh was necessary after client starts streaming... why?
+    # "Browsers expect MJPEG streams to begin with a valid JPEG frame. If starting blank or malformed it will lock up.
+    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)  # black 640x480 placeholder frame
     _, dummy_encoded = cv2.imencode('.jpg', dummy_frame)
     
     global frame_to_display
@@ -139,7 +138,7 @@ def generate_frames():
         with lock:
             if frame_to_display is not None:
                 try:
-                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display.tobytes() + b'\r\n') 
+                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display + b'\r\n')  # no need for .tobytes() anymore
                 except Exception as e:
                     print(f"Error encoding frame: {e}")
                     yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' +  b'\r\n') # empty frame
