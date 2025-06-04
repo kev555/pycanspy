@@ -9,6 +9,7 @@ import cv2
 import pickle
 import struct
 import sys
+import numpy as np
 
 # Control vars:
 process_running = True
@@ -166,6 +167,7 @@ def listen_commands(conn, addr):      # new thread each time to listen for comma
     print("[SP:] listen_commands finished")
 
 
+# Send frames to the VPS
 def send_frame_server(conn):
     print("[SP:] send_frame_server222222222, conn obj:", conn)
     while server_viewing:
@@ -191,6 +193,9 @@ def send_frame_server(conn):
             # sendall() ensures that all the data you want to send is eventually transmitted, 
             # even if it has to be broken into multiple TCP packets, TCP will guarantee ordered delivery
 
+
+            print("[SP:] Sent 1 frame !")
+
         except queue.Empty:
             print("[SP:] No frame in queue, continue to next iteration")
             continue # No frame in queue, continue to next iteration
@@ -215,7 +220,7 @@ def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
     # camera_fps = webcam_obj.get(cv2.CAP_PROP_FPS) # was going to sync frames manually..... see note
 
     while camera_in_use:                # Runs as long as camera_in_use is true
-        start_time = time.time()        # take the time before reading frame (+ other operations)
+        #start_time = time.time()        # take the time before reading frame (+ other operations)
         if exit_command:
             print("[SP:] Exiting...")
             clean_camera()
@@ -245,6 +250,8 @@ def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
             except queue.Full:
                 print("Frame queue is full (or blocked?) - A frame was dropped")
                 pass                                    # pass = no action needed placeholder
+            # frame = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+            # frame_queue.put(frame)
         
         if not server_viewing:
             # kill the remote viewing thread .. ?
@@ -273,7 +280,7 @@ def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
                 camera_in_use = False
                 break
         
-        time.sleep(.2) # leave it at 5 frames per second so as not to exhaust VPS resources during testing
+        time.sleep(1) # leave it at 5 frames per second so as not to exhaust VPS resources during testing
     
     # end camera_in_use
     print("[SP:] cam_frame_loop finished")

@@ -10,7 +10,6 @@ import numpy as np
 
 app = Flask(__name__)
 frame_to_display = None
-start_server_viewing = None
 lock = threading.Lock()
 
 # socket stuff
@@ -29,6 +28,8 @@ server_host = '0.0.0.0'
 # so if tl;dr this the verbose recap.... 0.0.0.0 is fine for enabling public out/in access, quickly, easily, persistently
 
 is_client_connected = None
+last_connected_state = None
+start_server_viewing = None
 
 def create_master_socket():
     global show_stream, recording, writer, camera_in_use, process_running, exit_command
@@ -37,11 +38,14 @@ def create_master_socket():
     # Socket initialization - this is the permenant gateway socket for all connections
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # = "make a socket object which will use the network stack (AF_INET), specifically TCP for transserver_recieve_port (SOCK_STREAM), not UDP"
+    
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # force socket re-use probably not safe! - close socket proprtly later - re-use safe shutdown from GUI
+    
     server_socket.bind((server_host, server_recieve_port))    # bind to the socket
     server_socket.listen(1)             # listen to the socket, single connection; can be expanded
     
     while True:        # listen for new connections, creating new sockets for each      
-        print("[SP:] Waiting for a new client to connect to the socket...")
+        print("Server socket created, waiting here for a new client to connect...")
         try:
             conn, addr = server_socket.accept()     # <- blocking, listen for new connection attempted on this master socket, 
                                                     # then generate a new socket "conn" and link the connection request to that instead,
@@ -50,7 +54,7 @@ def create_master_socket():
             print(f"Problem accepting connection: {e}")
             break
         
-        print("[SP:] Client connected: ", conn, addr)
+        print("PC app connected!!:") #, conn, addr)
         is_client_connected = True
 
         threading.Thread(target=send_command_recieve_video, name=f"Thread-ClientIP-{addr[0]}", args=(conn, addr)).start()
@@ -63,11 +67,14 @@ def send_command_recieve_video(conn, addr):
     global frame_to_display, start_server_viewing, is_client_connected
 
     while True:
-        if start_server_viewing is not None:
+        print("Now attemptting to send command to the PC app")
+        # Try 3 times to send command through socket conn:
+        if start_server_viewing is True:
             max_send_retries = 3
-            for attempt in range(max_send_retries): # Send command through socket:
+            for attempt in range(max_send_retries): 
                 try:
-                    conn.sendall(("start_server_view" + '\n').encode()) # no worry about blocking this is already in a thread
+                    conn.sendall(("start_server_view" + '\n').encode()) 
+                    # no worry about blocking, this is already in a thread
                     # if this passes, messages was sent, break out of while and start trying to display frames
                     break
                 except Exception as e:
@@ -76,19 +83,21 @@ def send_command_recieve_video(conn, addr):
             else:
                 raise Exception("Failed to send command after {max_send_retries} attempts.")
             
-            # So here, start_server_view has been sent, the manage_camera process will now start sending frames to this process on the VPS
+            # So here, start_server_view command has been sent, the manage_camera process will now start sending frames to this process on the VPS, back through the socket
 
             data_buffer = b""
             fourbyte_un_bigE_struct = struct.calcsize(">I") # an ">I" struct, > = big-endian (TCP/IP standard), I = unsigned int (4 bytes))
 
             try:
-                print("1111")
-                while True:
+                #print("1111")
+                while start_server_viewing is True: 
+                    # soon as start_server_viewing is false - exit
+                    # ok to reun even when start_server_viewing is None (at the start), the .recv() will wait
+                    
                     while len(data_buffer) < fourbyte_un_bigE_struct: # read at least 4 bytes before continuing, as the frame lenght size description header is at least needed
                         data_buffer += conn.recv(4096) # blocks until at least 4096 bytes appears in the OS buffer for this socket, reads it then stops blocking
-
                     
-                    frame_size_description = data_buffer[:fourbyte_un_bigE_struct]        
+                    frame_size_description = data_buffer[:fourbyte_un_bigE_struct]     
                     # grab the first 4 bytes, which notate the size of the frame data
                     # the rest of the bytes are the frame data itself
                     toal_frame_size_as_int = struct.unpack("!I", frame_size_description)[0]     # decode them into an integer value
@@ -113,19 +122,20 @@ def send_command_recieve_video(conn, addr):
                         # Just pass the frame as bytes deirectly to the multipart: (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display + b'\r\n') 
                         with lock:
                             frame_to_display = frame_data # just frame_data directly now
-                    except pickle.UnpicklingError as e:
-                        print(f"Error unpickling frame: {e}")
+                    except e:
+                        print(f"Error reading frame: {e}")
                         continue
-
             except Exception as e:
                 print(f"Error receiving data: {e}")
-            finally:
-                conn.close()
-                print("Socket closed")
-        else:
+            # finally:
+            #     conn.close()
+            #     print("Socket closed")
+        elif start_server_viewing is False:
+            print("start_server_viewing is False")
             time.sleep(1)
+    
+        time.sleep(1)
 
-is_client_connected = None
 
 def generate_frames():
     # needs a placeholder, if just an empty frame a page refresh was necessary after client starts streaming... why?
@@ -143,19 +153,24 @@ def generate_frames():
                     print(f"Error encoding frame: {e}")
                     yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' +  b'\r\n') # empty frame
             else:
-                yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + dummy_encoded.tobytes() + b'\r\n')
-        time.sleep(1 / 30)  # 30 FPS
+                yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + dummy_encoded.tobytes() + b'\r\n') # Is this needed any more ????
+                time.sleep(1)  # 0.5 FPS
+        time.sleep(1)  # 30 FPS
 
 
 
 @app.route('/control', methods=['POST'])
 def control():
-    global start_server_viewing
+    global start_server_viewing, is_client_connected
     data = request.get_json()
     command = data.get('command')
     print(f"Received command: {command}") # ???????????
-    if command in ("Start", "Stop"):
+    if command in ("Start"):
         start_server_viewing = True
+        return f"Command {command} received", 200
+    if command in ("Stop"):
+        start_server_viewing = False
+        is_client_connected = False
         return f"Command {command} received", 200
     else:
         return 'Invalid command', 400
@@ -177,11 +192,48 @@ def video_feed():
 
 @app.route('/client_status')
 def client_status():
-    return jsonify({"connected": is_client_connected})
+    global last_connected_state
+
+    print(1119999, last_connected_state, is_client_connected)
+    print("state 0: ", is_client_connected, last_connected_state)
+    
+    # Using the global state variable I will just store and refrence the last state vs current state every few seconds..
+    while True:
+        if is_client_connected != last_connected_state: 
+            # passes only if they are not the same, as both variable start off as None this will run only after client has connected
+            # last_connected_state is then set to is_client_connected, so on subsequent passes it will not run until something changes
+            # so anytine this runs - something has changed, so simply check the current state and set last_connected_state to that value
+            # update the html to notate the new state before relooping and waiting for another change to is_client_connected
+            print("Connected state changed: ", is_client_connected, last_connected_state)
+            if is_client_connected is False: 
+                last_connected_state = False
+                #print("states 2: ", is_client_connected, last_connected_state)
+                return jsonify({"connected": False})
+            elif is_client_connected is True:
+                last_connected_state = True
+                #print("states 3: ", is_client_connected, last_connected_state)
+                return jsonify({"connected": True})
+            else:
+                print("states wtffffffff: ", is_client_connected, last_connected_state)
+        # else:
+        #     pass
+        #     # print("nooo change")
+        #     #pass # just keep the connection open if nothing changed == "long polling"
+        time.sleep(3)
+
+# /client_status now implements long-polling here to stop constant checks from browser -> server to get the PC app's connected-to-server state
+# instead of many repettive GETs now just one "pending" GET
+# once a state change is detected (PC app connected or disconnected to the server), update the browser accordingly by responding to the pending GET with return
+# after the PC app connects and thus the pending request is responded to, another GET for the status is made immidiatly and this also stays pending until another change
+# so just 1 full request-response cycle per status change
+# however this now requires doing the constant connected state check directly here in server code (hence the while True loop)
+# (would Server Sent Events be better here since this is a specific separate connection?)
+
 
 @app.route('/')
 def index():
-    return render_template('index.html') # Not entirely necessary, can be viewed directly at: my_server.com/video_feed
+    return render_template('index.html') 
+    # the raw video can be viewed directly at: my_server.com/video_feed, is it necessary to not allow this? probably ok
 
 if __name__ == "__main__":
     receive_thread = threading.Thread(target=create_master_socket,)

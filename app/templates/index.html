@@ -27,20 +27,26 @@
             .catch(error => console.error('Error:', error));
         }
 
-        function checkClientStatus() {
-            fetch('/client_status')
-            .then(response => response.json())
-            .then(data => {
-                if (data.connected === true) {
-                    document.getElementById("status").innerText = "Client Connected!... Press Start when you're ready to request PC to start streaming";
-                } else {
-                    document.getElementById("status").innerText = "Waiting for connection... Pressing Start won't do anything yet";
-                }
-            })
-            .catch(err => console.error(err));
-        }
+    async function checkClientStatus() {  
+        try {
+            // need to await every async operation to take advantage of "long-polling"
+            const response = await fetch('/client_status');
+            const data = await response.json();
 
-    setInterval(checkClientStatus, 1000); // Poll every 1 second
+            if (data.connected === true) {
+                document.getElementById("status").innerText =
+                    "Client Connected!... Press Start when you're ready to request PC to start streaming";
+            } else {
+                document.getElementById("status").innerText =
+                    "Waiting for connection... Pressing Start won't do anything yet";
+            }
+            await checkClientStatus(); // the fuction self call itself obviously must be awaited too or subsequent runs will be asynchronous
+        } catch (err) {
+            console.error(err);
+        } 
+    }    
+    checkClientStatus()
+
     </script>
 </body>
 </html>
