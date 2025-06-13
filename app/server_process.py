@@ -2,7 +2,8 @@ import socket
 import cv2
 import pickle
 import struct
-from flask import Flask, Response, render_template, request, jsonify
+import os
+from flask import Flask, Response, render_template, request, jsonify, send_from_directory
 import threading
 import time
 import datetime
@@ -11,6 +12,8 @@ import numpy as np
 app = Flask(__name__)
 frame_to_display = None
 lock = threading.Lock()
+
+FPS = 1 / 5
 
 # socket stuff
 client_socket = None
@@ -96,6 +99,8 @@ def send_command_recieve_video(conn, addr):
                     
                     while len(data_buffer) < fourbyte_un_bigE_struct: # read at least 4 bytes before continuing, as the frame lenght size description header is at least needed
                         data_buffer += conn.recv(4096) # blocks until at least 4096 bytes appears in the OS buffer for this socket, reads it then stops blocking
+                        if not data_buffer:  # connection closed by client
+                                    print("Connection closed by client")
                     
                     frame_size_description = data_buffer[:fourbyte_un_bigE_struct]     
                     # grab the first 4 bytes, which notate the size of the frame data
@@ -103,9 +108,11 @@ def send_command_recieve_video(conn, addr):
                     toal_frame_size_as_int = struct.unpack("!I", frame_size_description)[0]     # decode them into an integer value
                     data_buffer = data_buffer[fourbyte_un_bigE_struct:]                         # take the rest of the recieved bytes, - thus trimming the first 4
                     
-                    while len(data_buffer) < toal_frame_size_as_int:  
+                    while len(data_buffer) < toal_frame_size_as_int:
                         #print("got some more data")  
                         data_buffer += conn.recv(4096)         # keep reading 4096 bytes from the socket until at least the current frame's worth of data is collected
+                        if not data_buffer:  # connection closed by client
+                                    print("Connection closed by client")
                     # If multiple frames are being sent, the final recv() in this loop may contain the start of the next frame.
 
                     # So extract only this frame's data from the buffer, leaving any trailing data (belonging to the next frame) for the next iteration.
@@ -137,26 +144,50 @@ def send_command_recieve_video(conn, addr):
         time.sleep(1)
 
 
+def make_placholder_frame():
+    black_frame = np.zeros((480, 640, 3), dtype=np.uint8)  # Create black frame
+    cv2.putText(
+        black_frame,
+        "No video stream yet",
+        org=(50, 240),               # x, y position of text
+        fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+        fontScale=1,
+        color=(255, 255, 255),       # White text
+        thickness=2,
+        lineType=cv2.LINE_AA
+    )
+    _, black_frame_encoded = cv2.imencode('.jpg', black_frame)
+    return black_frame_encoded
+
+
+
 def generate_frames():
     # needs a placeholder, if just an empty frame a page refresh was necessary after client starts streaming... why?
     # "Browsers expect MJPEG streams to begin with a valid JPEG frame. If starting blank or malformed it will lock up.
-    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)  # black 640x480 placeholder frame
-    _, dummy_encoded = cv2.imencode('.jpg', dummy_frame)
     
+    # black_frame = np.zeros((480, 640, 3), dtype=np.uint8)  # black 640x480 placeholder frame
+    # _, black_frame_encoded = cv2.imencode('.jpg', black_frame)
+    
+    black_frame_encoded = make_placholder_frame()
+    print(black_frame_encoded)
+
+
+    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + black_frame_encoded.tobytes() + b'\r\n')
+
     global frame_to_display
     while True:
+        print("generate_framesssssssssssssssss")
+        time.sleep(FPS)
         with lock:
             if frame_to_display is not None:
                 try:
                     yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display + b'\r\n')  # no need for .tobytes() anymore
                 except Exception as e:
                     print(f"Error encoding frame: {e}")
-                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' +  b'\r\n') # empty frame
+                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' +  b'\r\n') # empty frame (white)
             else:
-                yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + dummy_encoded.tobytes() + b'\r\n') # Is this needed any more ????
-                time.sleep(1)  # 0.5 FPS
-        time.sleep(1)  # 30 FPS
-
+                yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + black_frame_encoded.tobytes() + b'\r\n')
+                time.sleep(2) # can wait an extra 2 seconds here as the blank image doesnt need to be full FPS
 
 
 @app.route('/control', methods=['POST'])
@@ -229,6 +260,16 @@ def client_status():
 # however this now requires doing the constant connected state check directly here in server code (hence the while True loop)
 # (would Server Sent Events be better here since this is a specific separate connection?)
 
+
+# Chrome DevTools trying to check if the site has a known devtools-specific configuration (for debugging, like source maps or remote debugging endpoints).
+# actually... something else was delaying the load up not this, not necessary to block
+# @app.route('/.well-known/appspecific/com.chrome.devtools.json')
+# def suppress_chrome_probe():
+#     return '', 204
+
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(os.path.join(app.root_path, 'static'), 'favicon.ico', mimetype='image/vnd.microsoft.icon')
 
 @app.route('/')
 def index():

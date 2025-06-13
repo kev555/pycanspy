@@ -143,9 +143,9 @@
 #### Next Steps / TO DO:
 
 **Minor:**  
-- Change to long polling in JavaScript.  
-- Remove pickle usage for server to improve speed (unnecessary for this setup; more details forthcoming).  
-- Implement stop functionality from `server_process.py` HTML.  
+- Change to long polling in JavaScript. - done  
+- Remove pickle usage for server to improve speed (unnecessary for this setup; more details forthcoming) - done 
+- Implement stop functionality from `server_process.py` HTML - 
 - Add TLS encryption to sockets.  
 - Make `client_socket.sendall` asynchronous with `asyncio`.  
 - Eventually add WebSocket support browser ↔ server.

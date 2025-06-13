@@ -19,6 +19,8 @@ camera_in_use = False
 server_viewing = False
 exit_command = False
 
+FPS = 1 / 5
+
 # OpenCV objs
 writer = None
 webcam_obj = None
@@ -280,7 +282,7 @@ def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
                 camera_in_use = False
                 break
         
-        time.sleep(1) # leave it at 5 frames per second so as not to exhaust VPS resources during testing
+        time.sleep(FPS) # leave it at 5 frames per second so as not to exhaust VPS resources during testing
     
     # end camera_in_use
     print("[SP:] cam_frame_loop finished")

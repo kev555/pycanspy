@@ -2,6 +2,8 @@
 <html>
 <head>
     <title>Live Video Stream</title>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+
 </head>
 <body>
     <h1>Live Video Feed</h1>
@@ -40,7 +42,7 @@
                 document.getElementById("status").innerText =
                     "Waiting for connection... Pressing Start won't do anything yet";
             }
-            await checkClientStatus(); // the fuction self call itself obviously must be awaited too or subsequent runs will be asynchronous
+            await checkClientStatus(); // the recursive call itself obviously must be awaited for subsequent runs to be synchronous
         } catch (err) {
             console.error(err);
         } 
