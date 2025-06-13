@@ -49,6 +49,19 @@ frame_queue = queue.Queue(maxsize=300)
 # although this won't fail it will cause frames to be dropped from the remote viewing
 # with 300 frames Queue and ~30 fps camera == 10 delay before starting to drop frames
 
+# *IMPORTANT
+# "two (or more) threads can safely read from the same queue.Queue in Python"
+# HOWEVER this is not as it seems:
+# ✅ Multiple threads can get() from the queue safely
+# ✅ Multiple threads can put() into the queue safely
+# ✅ You can even mix readers and writers across many threads without race conditions
+# queue.Queue is built for multi-threaded use
+# !The queue is designed for work-sharing, not broadcasting
+# So if Thread A reads an item, it’s gone — Thread B won’t see it.
+# So this cannot be used to read the frame once and grab it by mulitple peers
+
+# Would need to use multiple queues or a subscriber / publisher method/library/server
+
 
 # Create / re-create socket. If .close()'d the client_socket object reamins but the OS-level file descriptor is released (dead socket object)
 def createSocket(client_socket):
@@ -78,19 +91,27 @@ def connectSocket(client_socket):
         else:
             raise Exception( f"Failed to connect after {max_connect_retries} attempts.")
 
-
+# VPS socket listener thread function 
 def VPS_master_socket_reverse_listener():
     global client_socket
     global show_stream, recording, writer, camera_in_use, process_running, exit_command
     global local_host, local_port, server_socket
     
     try:
-        client_socket = createSocket(client_socket)                 # Create socket, will return a new created / re-created socket if client_socket is None
-        connectSocket(client_socket)                                # Connect socket, will directly modify the current client_socket
-        threading.Thread(target=listen_commands, name=f"Thread-ClientIP-{999}", args=(client_socket, 9999)).start()
+        client_socket = createSocket(client_socket)                 # Create socket, will return a newly created / re-created socket if client_socket is None
+        connectSocket(client_socket)                                # Connect socket, will directly modify the returned client_socket, no need to return + reassign
+        # these shuldnt be done differently, it's confusingg....
+        # change above:
+        # return socket.socket(socket.AF_INET, socket.SOCK_STREAM) to:
+        # client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        # no need to bind or listen here, the VPS does that, just pass the socket ti a thread
+    
+        threading.Thread(target=listen_commands_on_master_socket, name=f"Thread-ClientIP-{999}", args=(client_socket, 9999)).start()
     except Exception as e:
         print("Caught Exceptionnnnn44444:", e, "Original cause:", e.__cause__)
-    
+
+# local socket listener thread function 
 def local_master_socket_listener():
     global show_stream, recording, writer, camera_in_use, process_running, exit_command
     global local_host, local_port, server_socket
@@ -114,16 +135,19 @@ def local_master_socket_listener():
         print("[SP:] Client connected: ", conn, addr)
         time.sleep(1)
         
-        threading.Thread(target=listen_commands, name=f"Thread-ClientIP-{addr[0]}", args=(conn, addr)).start()
+        threading.Thread(target=listen_commands_on_master_socket, name=f"Thread-ClientIP-{addr[0]}", args=(conn, addr)).start()
         # Create a new thread for each connection, and name it by IP
         # there is multiple conn objects so can't use a global, just pass new one to thread each time with args=conn
 
     print("[SP:] listen_connections finished")
 
-def listen_commands(conn, addr):      # new thread each time to listen for commands on each connection socket obj (conn)
-    global writer, camera_in_use, exit_command, process_running, webcam_obj
+def listen_commands_on_master_socket(conn, addr):      # new thread each time to listen for commands on each connection socket obj (conn)
+    # Each of these threads will listen to a master socket (eithr local or VPS from now), for commands
+    global writer, camera_in_use, exit_command, process_running, webcam_obj, recording
     global local_host, local_port, server_socket, show_stream, output_dir, clip_interval_secs
     global server_viewing
+
+    stop_send_frames_to_VPS_event_obj = threading.Event()
     
     while process_running:
         try:
@@ -145,17 +169,25 @@ def listen_commands(conn, addr):      # new thread each time to listen for comma
             elif cmd == "stop_record":
                 recording=False             # don't release the cv writer here, causing problems, do it in loop
             elif cmd == "start_server_view":      
-                # additional new sub-thread each time each remote connection socket obj (conn)
-                # send over the same (conn) TCP connection, (TCP is duplex), no need to creat a new socket / TCP connection
-                # two (or more) threads can safely read from the same queue.Queue in Python
-                # there is multiple conn objects so can't use a global conn, just pass new one to thread each time with args=conn
-                print("[SP:] send_frame_server1111111, conn obj:", conn)
-                new_sub_thread = threading.Thread(target=send_frame_server, name=f"Sub-Thread-ClientIP-{999}", args=(conn,))
-                new_sub_thread.start()
+                # new sub-thread each time VPS requests frames over the VPS-master-socket obj ("conn"), pass the thread the socket with args=conn
+                # send frames directly back over this TCP connection, TCP is duplex, no need to create a new socket
+                if stop_send_frames_to_VPS_event_obj.is_set():
+                    stop_send_frames_to_VPS_event_obj.clear()
+                VPS_send_thread = threading.Thread(target=send_frames_to_VPS, name=f"VPS_Send_Thread", args=(conn,stop_send_frames_to_VPS_event_obj,))
+                VPS_send_thread.start()
                 server_viewing=True
-                camera_in_use = True
+                # camera_in_use = True # not necessary yet, until i want to be able to trigger streaming ENTIRELY from remote VPS
+            elif cmd == "stop_server_view":
+                # just kill the VPS thread, this won't kill the socket so the thread can just be remade and passed the socket refrence again, efficent
+                # Python threads can’t be forcefully killed from the outside in a safe, built-in way
+                # must signal the thread with an Event to stop, and have the thread check for that signal regularly
+                stop_send_frames_to_VPS_event_obj.set()
+                # VPS_send_thread.join() 
+                # use this if want to pause this main thread until that one finishes exiting, 
+                # but that thread is very simple so no real need, it should end very quickly
+                server_viewing=False
             elif cmd == "exit":
-                graceful_socket_shutdown(conn)  # need to close the socket from here as each listen_commands thread has it's own non-global socket object
+                graceful_socket_shutdown(conn)  # need to close the socket from here as each listen_commands_on_master_socket thread has it's own non-global socket object
                 exit_command = True             # gracefully exit from the inside cam_frame_loop, instead of just killing it from here
                 return                          # break while loop so as not to wait for another command
             cmd = "blank"
@@ -166,16 +198,15 @@ def listen_commands(conn, addr):      # new thread each time to listen for comma
             print(f"[SP:] Error reading from socket: {e}")
             break
 
-    print("[SP:] listen_commands finished")
+    print("[SP:] listen_commands_on_master_socket finished")
 
 
 # Send frames to the VPS
-def send_frame_server(conn):
-    print("[SP:] send_frame_server222222222, conn obj:", conn)
-    while server_viewing:
+def send_frames_to_VPS(conn, stop_send_frames_to_VPS_event_obj):
+
+    while not stop_send_frames_to_VPS_event_obj.is_set():
         try:
             frame = frame_queue.get(timeout=1)                  # Get frame from queue, with timeout of 1 is enough?
-
             success, encoded_frame = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50]) # encode it now, before transmitting!!
             if not success:
                 raise RuntimeError("Failed to encode frame")
@@ -196,7 +227,7 @@ def send_frame_server(conn):
             # even if it has to be broken into multiple TCP packets, TCP will guarantee ordered delivery
 
 
-            print("[SP:] Sent 1 frame !")
+            print("[SP:] Sent 1 frame to the VPS")
 
         except queue.Empty:
             print("[SP:] No frame in queue, continue to next iteration")
@@ -207,7 +238,7 @@ def send_frame_server(conn):
 
 
 def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
-    global writer, camera_in_use, exit_command, process_running, webcam_obj
+    global writer, camera_in_use, exit_command, process_running, webcam_obj, recording
     global local_host, local_port, conn, server_socket, show_stream, output_dir, clip_interval_secs
     global frame_queue
 
@@ -247,6 +278,7 @@ def cam_frame_loop():  # New webcam_obj etc generated upon each restart of this
                 cv2.destroyWindow("Live")
         
         if server_viewing: # Obviously not going to try to process and send the frames here, send them to a queue, then use a thread to work off the queue
+            print("sent a frame to the queue")
             try:
                 frame_queue.put(frame, block=False)     # put frame in queue
             except queue.Full:

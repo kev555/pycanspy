@@ -70,15 +70,17 @@ def send_command_recieve_video(conn, addr):
     global frame_to_display, start_server_viewing, is_client_connected
 
     while True:
-        print("Now attemptting to send command to the PC app")
-        # Try 3 times to send command through socket conn:
+        print("Should I send a command to the PC app?")
+        
         if start_server_viewing is True:
-            max_send_retries = 3
-            for attempt in range(max_send_retries): 
+            print("start_server_viewing has been changed to True, so ask PC to start sending")
+            max_send_retries = 3 # Try 3 times to send command through socket conn:
+            for attempt in range(max_send_retries):
                 try:
-                    conn.sendall(("start_server_view" + '\n').encode()) 
-                    # no worry about blocking, this is already in a thread
-                    # if this passes, messages was sent, break out of while and start trying to display frames
+                    conn.sendall(("start_server_view" + '\n').encode()) # no worry about blocking, this is already in a thread
+                    
+                    # if this is reached, the message was sent successfully, break out of the for loop without trying the remaining times
+                    print("start_server_view message sent to PC")
                     break
                 except Exception as e:
                     print(f"Send attempt {attempt+1} failed: {e}")
@@ -86,66 +88,81 @@ def send_command_recieve_video(conn, addr):
             else:
                 raise Exception("Failed to send command after {max_send_retries} attempts.")
             
-            # So here, start_server_view command has been sent, the manage_camera process will now start sending frames to this process on the VPS, back through the socket
+            # if this is reached, the start_server_view command has been sent, so the manage_camera process should have now started to send frames back through the socket
+            pc_is_sending = True
 
+            # now start collecting them frames from the OS buffer
             data_buffer = b""
             fourbyte_un_bigE_struct = struct.calcsize(">I") # an ">I" struct, > = big-endian (TCP/IP standard), I = unsigned int (4 bytes))
-
             try:
-                #print("1111")
-                while start_server_viewing is True: 
-                    # soon as start_server_viewing is false - exit
-                    # ok to reun even when start_server_viewing is None (at the start), the .recv() will wait
-                    
+                while start_server_viewing is True:
+
                     while len(data_buffer) < fourbyte_un_bigE_struct: # read at least 4 bytes before continuing, as the frame lenght size description header is at least needed
                         data_buffer += conn.recv(4096) # blocks until at least 4096 bytes appears in the OS buffer for this socket, reads it then stops blocking
                         if not data_buffer:  # connection closed by client
                                     print("Connection closed by client")
                     
-                    frame_size_description = data_buffer[:fourbyte_un_bigE_struct]     
-                    # grab the first 4 bytes, which notate the size of the frame data
-                    # the rest of the bytes are the frame data itself
+                    frame_size_description = data_buffer[:fourbyte_un_bigE_struct]
+                    # grab the first 4 bytes, which notate the size of the frame data, the rest of the bytes are the frame data itself
                     toal_frame_size_as_int = struct.unpack("!I", frame_size_description)[0]     # decode them into an integer value
                     data_buffer = data_buffer[fourbyte_un_bigE_struct:]                         # take the rest of the recieved bytes, - thus trimming the first 4
                     
                     while len(data_buffer) < toal_frame_size_as_int:
-                        #print("got some more data")  
-                        data_buffer += conn.recv(4096)         # keep reading 4096 bytes from the socket until at least the current frame's worth of data is collected
-                        if not data_buffer:  # connection closed by client
+                        data_buffer += conn.recv(4096)      # keep reading 4096 bytes from the socket until at least the current frame's worth of data is collected
+                        if not data_buffer:                 # connection closed by client
                                     print("Connection closed by client")
                     # If multiple frames are being sent, the final recv() in this loop may contain the start of the next frame.
-
                     # So extract only this frame's data from the buffer, leaving any trailing data (belonging to the next frame) for the next iteration.
                     frame_data = data_buffer[:toal_frame_size_as_int]
                     # frame_data is now a single full indivdual frame
 
-                    # set the data_buffer to just contain the trailing data, if any, and repeat the process 
+                    # set the data_buffer to just contain the trailing data, if any, and repeat the reading process on next loop
                     # Note: there could be an edge case where the final frame doesn't display properly if the connection is closed mid-transfer
                     data_buffer = data_buffer[toal_frame_size_as_int:]
 
                     try:
-                        # frame = pickle.loads(frame_data) # No. It now uses the simpler .tobytes() in manage camera, 
-                        # now no need to unpickle it into a frame and then tobytes() the fame inside generate_frames()... 
-                        # Just pass the frame as bytes deirectly to the multipart: (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display + b'\r\n') 
+                        # No pickle, just pass the frame as bytes deirectly to the multipart: (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display + b'\r\n') 
                         with lock:
-                            frame_to_display = frame_data # just frame_data directly now
+                            frame_to_display = frame_data
                     except e:
                         print(f"Error reading frame: {e}")
                         continue
             except Exception as e:
                 print(f"Error receiving data: {e}")
-            # finally:
-            #     conn.close()
-            #     print("Socket closed")
-        elif start_server_viewing is False:
-            print("start_server_viewing is False")
             time.sleep(1)
-    
-        time.sleep(1)
+        elif start_server_viewing is False:
+            if pc_is_sending is True:
+                print("start_server_viewing has been changed to False, but pc_is_sending is True, so ask PC to stop sending")
+                max_send_retries = 3                        # Try 3 times to send command through socket conn:
+                for attempt in range(max_send_retries):
+                    try:
+                        conn.sendall(("stop_server_view" + '\n').encode()) # no worry about blocking, this is already in a thread
+                        
+                        # if this is reached, the message was sent successfully, break out of the for loop without trying the remaining times
+                        print("stop_server_view message sent to PC")
+                        break
+                    except Exception as e:
+                        print(f"Send attempt {attempt+1} failed: {e}")
+                        time.sleep(1)
+                else:
+                    raise Exception("Failed to send command after {max_send_retries} attempts.")
+
+                pc_is_sending = False   # sent this back to False now
+            time.sleep(1)
+        else:
+            time.sleep(1)
+
+# So when start_server_viewing becomes False, it will break out of the reading loop, but stay in the checking loop,
+# and when it become True again it will try to sned the PC start_server_view request again
+# No need to conn.close() the socket, just instruct the PC app to stop sending
 
 
 def make_placholder_frame():
-    black_frame = np.zeros((480, 640, 3), dtype=np.uint8)  # Create black frame
+    black_frame = np.zeros((480, 640, 3), dtype=np.uint8)  
+    # Create black frame, Each frame is uniform and easy to notate structure:
+    # ((480, 640, 3)) -> "height 480, width 640, with 3 color channels (RGB)"
+    # dtype (uint8)   -> "raw bytes as a flat array of unsigned 8-bit integers."
+    
     cv2.putText(
         black_frame,
         "No video stream yet",
@@ -165,9 +182,6 @@ def generate_frames():
     # needs a placeholder, if just an empty frame a page refresh was necessary after client starts streaming... why?
     # "Browsers expect MJPEG streams to begin with a valid JPEG frame. If starting blank or malformed it will lock up.
     
-    # black_frame = np.zeros((480, 640, 3), dtype=np.uint8)  # black 640x480 placeholder frame
-    # _, black_frame_encoded = cv2.imencode('.jpg', black_frame)
-    
     black_frame_encoded = make_placholder_frame()
     print(black_frame_encoded)
 
@@ -176,7 +190,10 @@ def generate_frames():
 
     global frame_to_display
     while True:
-        print("generate_framesssssssssssssssss")
+        # print("generate_framesssssssssssssssss") 
+        # 
+        # 
+        # THIS DOESNT NEED TO RUN AT ALL IF THE PC IS NOT SENDING ie pc_is_sending = True !!!!!!!!!!!!!!!!!
         time.sleep(FPS)
         with lock:
             if frame_to_display is not None:
@@ -201,7 +218,7 @@ def control():
         return f"Command {command} received", 200
     if command in ("Stop"):
         start_server_viewing = False
-        is_client_connected = False
+        # is_client_connected = False # NO THIS SHOULD ONLY CHNAGE WHEN THE SOCKET IS CLOSED FROM THE PC SIDE!!!! OR WHEN THE SOCKET closes abruptly, how do i check for this????
         return f"Command {command} received", 200
     else:
         return 'Invalid command', 400
