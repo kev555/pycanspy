@@ -1,86 +1,85 @@
 import socket
 import cv2
+import pickle
 import struct
 import os
 from flask import Flask, Response, render_template, request, jsonify, send_from_directory
 import threading
 import time
+import datetime
 import numpy as np
 
 app = Flask(__name__)
 frame_to_display = None
 lock = threading.Lock()
+
 FPS = 1 / 5
 
 # socket stuff
-local_master_socket = None
+client_socket = None
 server_recieve_port = 5001
+# # server_host = '127.0.0.1'
+# # no, stop binding to an internal loopback address, it's only accessible internally, so no use for publicly connecting in, use:
 server_host = '0.0.0.0'
+# 0.0.0.0 = bind to all IP's on the device, which will include the one assigned to the network interface, 
+# I could bind JUST to the network interfaces's IP (146.190.96.130), both would work 
+# 0.0.0.0 works fine, but the downside being that 5001 can't be use for binding by any other process
+# However servers, and basically every internet connected device, have one primary network interface handling external traffic at a time.
+# And usually ther's just one public IP assigned to this default interface (althongh many is possible)
+# So under normal circumstances you couldn't bind to 5001 for external listening by multiple processes anyway, 
+# as there is only really 1 viable option for that port -> i.e. 146.190.96.130:5001
+# so if tl;dr this the verbose recap.... 0.0.0.0 is fine for enabling public out/in access, quickly, easily, persistently
 
 is_client_connected = None
 last_connected_state = None
 start_server_viewing = None
 
 def create_master_socket():
-    global server_host, server_recieve_port, local_master_socket, is_client_connected
+    global show_stream, recording, writer, camera_in_use, process_running, exit_command
+    global server_host, server_recieve_port, server_socket, is_client_connected
     
-    local_master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    local_master_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # i think i used this when windows locked a port from a dead process, is this safe??
-    local_master_socket.bind((server_host, server_recieve_port))
-    local_master_socket.listen(1) 
-    # 1 = single connection... which is ok for now. Would i have multiple Client PC processes connecting to this? Surely it would be a new instances of this process for each client?
+    # Socket initialization - this is the permenant gateway socket for all connections
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # = "make a socket object which will use the network stack (AF_INET), specifically TCP for transserver_recieve_port (SOCK_STREAM), not UDP"
     
-    while True:  
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # force socket re-use probably not safe! - close socket proprtly later - re-use safe shutdown from GUI
+    
+    server_socket.bind((server_host, server_recieve_port))    # bind to the socket
+    server_socket.listen(1)             # listen to the socket, single connection; can be expanded
+    
+    while True:        # listen for new connections, creating new sockets for each      
         print("Server socket created, waiting here for a new client to connect...")
         try:
-            local_socket, addr = local_master_socket.accept()
+            conn, addr = server_socket.accept()     # <- blocking, listen for new connection attempted on this master socket, 
+                                                    # then generate a new socket "conn" and link the connection request to that instead,
+                                                    # then continue listeing on the master socket here, rinse and repeat
         except Exception as e:
             print(f"Problem accepting connection: {e}")
             break
-        print("PC app connected!!:")
+        
+        print("PC app connected!!:") #, conn, addr)
         is_client_connected = True
-        threading.Thread(target=send_command_recieve_video, name=f"Thread-ClientIP-{addr[0]}", args=(local_socket, addr)).start()
 
-# This thread / function is created for each new connection to the server from PC, although that's just once for now
-# when PC disconnects (is_client_connected = False !) the while should stop running, but will it destory the socket? of course... that IS disconnecting, 
-# so then just make sure everthing is clean after a socket disconnection (listen for it with xxx
-# then just make sure it's ready to re-acdept the connection
-# So assuming the PC app abruptly disconnects the socket, how can i detect and deal with it here?
-# actually the way is to check at every blocking send or recieve operation  revc(), sendall(), send() etc
-# as already knonw at this point-> an empty byte string "b''" will be read upon a disconnection, so check for that at the revc(),
-# sendall() or send() will also detect it with raising a BrokenPipeError or ConnectionResetError
+        threading.Thread(target=send_command_recieve_video, name=f"Thread-ClientIP-{addr[0]}", args=(conn, addr)).start()
+        # Create a new thread for each connection, and name it by IP
+        # there is multiple conn objects so can't use a global, just pass new one to thread each time with args=conn
 
-# SOO: when a connection break is detected -> is_client_connected should be set to False
-# Then add the logic to clean and re-await new connection
-# also ive already tried to designed the logic for checking an notifying the user of connected state in the:
-# 
-# @app.route('/control', methods=['POST'])
-# But this was when i thought that "Stop" would actually be breaking the connecton,
-# can this logic be re-used or is it wasted!?
 
-# So when start_server_viewing becomes False, it will break out of the reading loop, but stay in the checking loop,
-# and when it become True again it will try to send the PC start_server_view request again
-# No need to local_socket.close() the socket, just instruct the PC app to stop sending
 
-# start_server_viewing = False + pc_is_sending = False ---> re-loop
-def send_command_recieve_video(local_socket, addr):
+def send_command_recieve_video(conn, addr):
     global frame_to_display, start_server_viewing, is_client_connected
 
     while True:
         print("Should I send a command to the PC app?")
-
+        
         if start_server_viewing is True:
             print("start_server_viewing has been changed to True, so ask PC to start sending")
-
-            max_send_retries = 3
+            max_send_retries = 3 # Try 3 times to send command through socket conn:
             for attempt in range(max_send_retries):
                 try:
-                    local_socket.sendall(("start_server_view" + '\n').encode())
-
-
-
-                    # if this is reached, the message was sent successfully, 
-                    # break out of the for loop without trying the remaining times
+                    conn.sendall(("start_server_view" + '\n').encode()) # no worry about blocking, this is already in a thread
+                    
+                    # if this is reached, the message was sent successfully, break out of the for loop without trying the remaining times
                     print("start_server_view message sent to PC")
                     break
                 except Exception as e:
@@ -89,34 +88,40 @@ def send_command_recieve_video(local_socket, addr):
             else:
                 raise Exception("Failed to send command after {max_send_retries} attempts.")
             
-            # if this is reached, the start_server_view command has been sent, 
-            # so the manage_camera process should have now started to send frames back through the socket
+            # if this is reached, the start_server_view command has been sent, so the manage_camera process should have now started to send frames back through the socket
             pc_is_sending = True
 
-            # now start collecting those frames from the OS buffer
+            # now start collecting them frames from the OS buffer
             data_buffer = b""
-            fourbyte_un_bigE_struct = struct.calcsize(">I")
+            fourbyte_un_bigE_struct = struct.calcsize(">I") # an ">I" struct, > = big-endian (TCP/IP standard), I = unsigned int (4 bytes))
             try:
                 while start_server_viewing is True:
 
-                    while len(data_buffer) < fourbyte_un_bigE_struct:
-                        data_buffer += local_socket.recv(4096)
-                        if not data_buffer:
-                            print("Connection closed by client")
+                    while len(data_buffer) < fourbyte_un_bigE_struct: # read at least 4 bytes before continuing, as the frame lenght size description header is at least needed
+                        data_buffer += conn.recv(4096) # blocks until at least 4096 bytes appears in the OS buffer for this socket, reads it then stops blocking
+                        if not data_buffer:  # connection closed by client
+                                    print("Connection closed by client")
                     
                     frame_size_description = data_buffer[:fourbyte_un_bigE_struct]
-                    toal_frame_size_as_int = struct.unpack("!I", frame_size_description)[0]
-                    data_buffer = data_buffer[fourbyte_un_bigE_struct:]
+                    # grab the first 4 bytes, which notate the size of the frame data, the rest of the bytes are the frame data itself
+                    toal_frame_size_as_int = struct.unpack("!I", frame_size_description)[0]     # decode them into an integer value
+                    data_buffer = data_buffer[fourbyte_un_bigE_struct:]                         # take the rest of the recieved bytes, - thus trimming the first 4
                     
                     while len(data_buffer) < toal_frame_size_as_int:
-                        data_buffer += local_socket.recv(4096)
-                        if not data_buffer:
-                            print("Connection closed by client")
-
+                        data_buffer += conn.recv(4096)      # keep reading 4096 bytes from the socket until at least the current frame's worth of data is collected
+                        if not data_buffer:                 # connection closed by client
+                                    print("Connection closed by client")
+                    # If multiple frames are being sent, the final recv() in this loop may contain the start of the next frame.
+                    # So extract only this frame's data from the buffer, leaving any trailing data (belonging to the next frame) for the next iteration.
                     frame_data = data_buffer[:toal_frame_size_as_int]
+                    # frame_data is now a single full indivdual frame
+
+                    # set the data_buffer to just contain the trailing data, if any, and repeat the reading process on next loop
+                    # Note: there could be an edge case where the final frame doesn't display properly if the connection is closed mid-transfer
                     data_buffer = data_buffer[toal_frame_size_as_int:]
 
                     try:
+                        # No pickle, just pass the frame as bytes deirectly to the multipart: (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display + b'\r\n') 
                         with lock:
                             frame_to_display = frame_data
                     except e:
@@ -128,10 +133,10 @@ def send_command_recieve_video(local_socket, addr):
         elif start_server_viewing is False:
             if pc_is_sending is True:
                 print("start_server_viewing has been changed to False, but pc_is_sending is True, so ask PC to stop sending")
-                max_send_retries = 3 
+                max_send_retries = 3                        # Try 3 times to send command through socket conn:
                 for attempt in range(max_send_retries):
                     try:
-                        local_socket.sendall(("stop_server_view" + '\n').encode())
+                        conn.sendall(("stop_server_view" + '\n').encode()) # no worry about blocking, this is already in a thread
                         
                         # if this is reached, the message was sent successfully, break out of the for loop without trying the remaining times
                         print("stop_server_view message sent to PC")
@@ -142,12 +147,14 @@ def send_command_recieve_video(local_socket, addr):
                 else:
                     raise Exception("Failed to send command after {max_send_retries} attempts.")
 
-                pc_is_sending = False
+                pc_is_sending = False   # sent this back to False now
             time.sleep(1)
         else:
-            # start_server_viewing has not been toggled at all yet, ie. Start or STop has not been pressed at all, do nothing
             time.sleep(1)
 
+# So when start_server_viewing becomes False, it will break out of the reading loop, but stay in the checking loop,
+# and when it become True again it will try to sned the PC start_server_view request again
+# No need to conn.close() the socket, just instruct the PC app to stop sending
 
 
 def make_placholder_frame():
