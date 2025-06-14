@@ -286,13 +286,13 @@ def clean_camera():
 # And then force close it regardless
 def graceful_socket_shutdown(socket_conn):
     print("[M.C.:] Attempting to safely disconnecting the socket", socket_conn)
-    try:
-        socket_conn.shutdown(socket.SHUT_RDWR)  
-        print("[M.C.:] Socket shutdown successfully")
-    except OSError as e:
-        print(f"[M.C.:] Failed to shutdown socket: {e}")
-    except Exception as e:
-        print(f"[M.C.:] Failed to shutdown socket!: {e}")
+    # try:
+    #     socket_conn.shutdown(socket.SHUT_RDWR)  
+    #     print("[M.C.:] Socket shutdown successfully")
+    # except OSError as e:
+    #     print(f"[M.C.:] Failed to shutdown socket: {e}")
+    # except Exception as e:
+    #     print(f"[M.C.:] Failed to shutdown socket!: {e}")
     
     # Now force close the socket, regardless if .shutdown() worked or not
     try:

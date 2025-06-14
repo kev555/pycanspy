@@ -58,6 +58,9 @@ def create_master_socket():
 # But this was when i thought that "Stop" would actually be breaking the connecton,
 # can this logic be re-used or is it wasted!?
 
+
+## ACTUALLY IM GETTING THIS CONFUSED /CLIENT_STATUS WAS FOR DECTING CONNECTION AND YESSSS OF COUNRS I WILL USE THIS WHEN THE LOGIC IS IMPLEENTED CORRECTLY!!!....
+
 # So when start_server_viewing becomes False, it will break out of the reading loop, but stay in the checking loop,
 # and when it become True again it will try to send the PC start_server_view request again
 # No need to local_socket.close() the socket, just instruct the PC app to stop sending
@@ -66,33 +69,49 @@ def create_master_socket():
 def send_command_recieve_video(local_socket, addr):
     global frame_to_display, start_server_viewing, is_client_connected
 
-    while True:
-        print("Should I send a command to the PC app?")
+    # break the if statment in here up into if start_server_viewing is True: and  if start_server_viewing is False and pc_is_sending is True:
+    # it too many lines in one if else
 
+    while is_client_connected: # this could just be True still tbh ..  im killing the thread with a return anyway
+        #print("Should I send a command to the PC app?")
         if start_server_viewing is True:
             print("start_server_viewing has been changed to True, so ask PC to start sending")
-
             max_send_retries = 3
             for attempt in range(max_send_retries):
                 try:
                     local_socket.sendall(("start_server_view" + '\n').encode())
-
-
-
-                    # if this is reached, the message was sent successfully, 
-                    # break out of the for loop without trying the remaining times
+                    # if reached, message sent, break out of for loop
                     print("start_server_view message sent to PC")
                     break
+                except (BrokenPipeError, ConnectionResetError) as e:
+                        print(f"Connection broken during send attempt {attempt+1}: {e}")
+                        # So what to do now? set is_client_connected to false, then ...? 
+                        # break out of the for loop and continue, or return out of the entire while loop?
+                        # no i cant contine ... it will start trying to read from a broken socket below.. so need to return out and end this hread.. but how to do it gracefully??
+
+                        # Yes im overthinking this
+                        # "Python’s threading.Thread is designed so that when the target function finishes (via return or hitting the end), 
+                        # the thread ends — no manual memory cleanup is needed."
+
+                        # what else needs to be done to ensure the thread will start again upon new re-connection?
+                        # nothing i think, the master socket listening line:
+                        # local_socket, addr = local_master_socket.accept() will just keep waiting and accepting new connections,
+                        # but will local_master_socket.listen(1) affect this? will a broken socket be considered closed??
+                        # oh never mind that "backlog size" is only for the master socket itself not the cild sockets ot creates 
+                        # the broken local_socket object will just die and be cleaned with the thread
+                        # so really not much to do.... just set is_client_connected = False return out of the loop and let this thread fucntion die,
+                        # but make sure the @app.route('/client_status') logic update the index of connecton status + pending GET restarts 
+
+                        is_client_connected = False
+                        return
                 except Exception as e:
                     print(f"Send attempt {attempt+1} failed: {e}")
                     time.sleep(1)
             else:
                 raise Exception("Failed to send command after {max_send_retries} attempts.")
             
-            # if this is reached, the start_server_view command has been sent, 
-            # so the manage_camera process should have now started to send frames back through the socket
+            # if reached, start_server_view command sent, manage_camera should be sending frames back through the socket now
             pc_is_sending = True
-
             # now start collecting those frames from the OS buffer
             data_buffer = b""
             fourbyte_un_bigE_struct = struct.calcsize(">I")
@@ -100,18 +119,20 @@ def send_command_recieve_video(local_socket, addr):
                 while start_server_viewing is True:
 
                     while len(data_buffer) < fourbyte_un_bigE_struct:
-                        data_buffer += local_socket.recv(4096)
-                        if not data_buffer:
-                            print("Connection closed by client")
+                        chunk = local_socket.recv(4096)
+                        if not chunk:
+                            raise ConnectionAbortedError("Client disconnected")
+                        data_buffer += chunk
                     
                     frame_size_description = data_buffer[:fourbyte_un_bigE_struct]
                     toal_frame_size_as_int = struct.unpack("!I", frame_size_description)[0]
                     data_buffer = data_buffer[fourbyte_un_bigE_struct:]
                     
                     while len(data_buffer) < toal_frame_size_as_int:
-                        data_buffer += local_socket.recv(4096)
-                        if not data_buffer:
-                            print("Connection closed by client")
+                        chunk = local_socket.recv(4096)
+                        if not chunk:
+                            raise ConnectionAbortedError("Client disconnected")
+                        data_buffer += chunk
 
                     frame_data = data_buffer[:toal_frame_size_as_int]
                     data_buffer = data_buffer[toal_frame_size_as_int:]
@@ -122,8 +143,15 @@ def send_command_recieve_video(local_socket, addr):
                     except e:
                         print(f"Error reading frame: {e}")
                         continue
+
+            except (ConnectionResetError, ConnectionAbortedError) as e:
+                    print(f"Client disconnected: {e}")
+                    # raise # ... no need to raise to anywhere, just return out and let thread die,
+                    # setting is_client_connected = False should notify the user html via the /client_status GET logic
+                    is_client_connected = False
+                    return
             except Exception as e:
-                print(f"Error receiving data: {e}")
+                print(f"Error receiving/reading data: {e}")
             time.sleep(1)
         elif start_server_viewing is False:
             if pc_is_sending is True:
@@ -203,18 +231,19 @@ def generate_frames():
 @app.route('/control', methods=['POST'])
 def control():
     global start_server_viewing, is_client_connected
-    data = request.get_json()
-    command = data.get('command')
-    print(f"Received command: {command}") # ???????????
-    if command in ("Start"):
-        start_server_viewing = True
-        return f"Command {command} received", 200
-    if command in ("Stop"):
-        start_server_viewing = False
-        # is_client_connected = False # NO THIS SHOULD ONLY CHNAGE WHEN THE SOCKET IS CLOSED FROM THE PC SIDE!!!! OR WHEN THE SOCKET closes abruptly, how do i check for this????
-        return f"Command {command} received", 200
-    else:
-        return 'Invalid command', 400
+
+    if is_client_connected:         # Only allow changing streaming state when the PC client is actually connected...!
+        data = request.get_json()
+        command = data.get('command')
+        print(f"Received command: {command}") # ???????????
+        if command in ("Start"):
+            start_server_viewing = True
+            return f"Command {command} received", 200
+        if command in ("Stop"):
+            start_server_viewing = False
+            return f"Command {command} received", 200
+        else:
+            return 'Invalid command', 400
 # api endpoint for recieving a command from webpage
 # these Flask routes are same like JS listeners. They are "URL-based event listeners", they dont block obviously, their "listening" is asynchronous
 # but the code inside their route function is synchronous as it's running in the current app.run() thread/process, so keep it light
@@ -233,10 +262,10 @@ def video_feed():
 
 @app.route('/client_status')
 def client_status():
-    global last_connected_state
+    global last_connected_state, is_client_connected
 
     print(1119999, last_connected_state, is_client_connected)
-    print("state 0: ", is_client_connected, last_connected_state)
+    #print("state 0: ", is_client_connected, last_connected_state)
     
     # Using the global state variable I will just store and refrence the last state vs current state every few seconds..
     while True:
@@ -248,11 +277,11 @@ def client_status():
             print("Connected state changed: ", is_client_connected, last_connected_state)
             if is_client_connected is False: 
                 last_connected_state = False
-                #print("states 2: ", is_client_connected, last_connected_state)
+                print("states 2: ", is_client_connected, last_connected_state)
                 return jsonify({"connected": False})
             elif is_client_connected is True:
                 last_connected_state = True
-                #print("states 3: ", is_client_connected, last_connected_state)
+                print("states 3: ", is_client_connected, last_connected_state)
                 return jsonify({"connected": True})
             else:
                 print("states wtffffffff: ", is_client_connected, last_connected_state)
@@ -260,7 +289,7 @@ def client_status():
         #     pass
         #     # print("nooo change")
         #     #pass # just keep the connection open if nothing changed == "long polling"
-        time.sleep(3)
+        time.sleep(1)
 
 # /client_status now implements long-polling here to stop constant checks from browser -> server to get the PC app's connected-to-server state
 # instead of many repettive GETs now just one "pending" GET

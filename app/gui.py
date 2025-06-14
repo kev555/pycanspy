@@ -129,11 +129,11 @@ def gui_setup():
 
     # Buttons
     record_button = tk.Button(
-        GUI_window, text="Start Recording", command=start_recording)
+        GUI_window, text="Start Local Recording", command=start_recording)
     record_button.pack(pady=10)
 
     stop_button = tk.Button(
-        GUI_window, text="Stop Recording", command=stop_recording)
+        GUI_window, text="Stop Local Recording", command=stop_recording)
     stop_button.pack(pady=10)
 
     show_button = tk.Button(

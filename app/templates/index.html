@@ -13,7 +13,7 @@
     <button onclick="sendCommand('Start')">Start</button>
     <button onclick="sendCommand('Stop')">Stop</button>
 
-    <div id="status">Waiting for connection...</div>
+    <div id="status">Waiting for connection...... Pressing Start or Stop won't do anything yet</div>
 
     <script>
         function sendCommand(command) {
@@ -37,10 +37,10 @@
 
             if (data.connected === true) {
                 document.getElementById("status").innerText =
-                    "Client Connected!... Press Start when you're ready to request PC to start streaming";
+                    "PC Client Connected!. Press Start to request PC to start streaming and Stop to request PC to stop streaming";
             } else {
                 document.getElementById("status").innerText =
-                    "Waiting for connection... Pressing Start won't do anything yet";
+                    "Waiting for connection... Pressing Start or Stop won't do anything yet";
             }
             await checkClientStatus(); // the recursive call itself obviously must be awaited for subsequent runs to be synchronous
         } catch (err) {
