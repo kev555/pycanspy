@@ -33,6 +33,7 @@ start_server_viewing = None
 # Im using 2 global vars for present and past state and comparing contiuously for change
 # instead should be using a threading.Event
 
+
 # montiors a socket for disconnection
 # interestingly if socket.close is used (in manage_camera) it triggers exception
 def monitor_disconnect(sock):
@@ -58,7 +59,7 @@ def monitor_disconnect(sock):
 
 def create_master_socket():
     global server_host, server_recieve_port, local_master_socket, is_client_connected
-    
+
     local_master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     local_master_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # i think i used this when windows locked a port from a dead process, is this safe??
     local_master_socket.bind((server_host, server_recieve_port))
