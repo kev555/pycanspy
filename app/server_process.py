@@ -21,6 +21,9 @@ server_host = '0.0.0.0'
 is_client_connected = None
 last_connected_state = None
 start_server_viewing = None
+is_pc_sending_frames = None
+
+connected_state_change_event = threading.Event()
 
 # PC app disconnects -> monitor_disconnect() function select.select's the socket and then MSG_PEEK's it every 1 second 
 # -> if in ready state, no problem - do nothing, but when an connection error or clean disconnected state (b'') is seen,
@@ -35,7 +38,8 @@ start_server_viewing = None
 
 
 # montiors a socket for disconnection
-# interestingly if socket.close is used (in manage_camera) it triggers exception
+# interestingly if socket.close() is used (in manage_camera) it triggers exception (ConnectionResetError, ConnectionAbortedError),
+# whereas if socket.shutdown(socket.SHUT_RDWR) is used, it sends the b'' so "if not data" is properly triggered
 def monitor_disconnect(sock):
     global is_client_connected
     while True:
@@ -45,12 +49,14 @@ def monitor_disconnect(sock):
             if sock in ready:
                 data = sock.recv(1, socket.MSG_PEEK)
                 if not data:
-                    print("Client disconnected!!!!!!!!! watcher!!!!!")
-                    is_client_connected = False
+                    print("Client disconnected!")
+                    #is_client_connected = False
+                    set_pc_connection_state(False)
                     break
         except (ConnectionResetError, ConnectionAbortedError):
             print("Client disconnected abruptly")
-            is_client_connected = False
+            #is_client_connected = False
+            set_pc_connection_state(False)
             break
         except Exception as e:
             print(f"Monitor error: {e}")
@@ -74,7 +80,8 @@ def create_master_socket():
             print(f"Problem accepting connection: {e}")
             break
         print("PC app connected!!:")
-        is_client_connected = True
+        #is_client_connected = True
+        set_pc_connection_state(True)
         # Start the monitor_disconnect and send_command_recieve_video
         threading.Thread(target=monitor_disconnect, args=(local_socket,), daemon=True).start()
         threading.Thread(target=send_command_recieve_video, name=f"Thread-ClientIP-{addr[0]}", args=(local_socket, addr)).start()
@@ -103,11 +110,11 @@ def create_master_socket():
 # and when it become True again it will try to send the PC start_server_view request again
 # No need to local_socket.close() the socket, just instruct the PC app to stop sending
 
-# start_server_viewing = False + pc_is_sending = False ---> re-loop
+# start_server_viewing = False + is_pc_sending_frames = False ---> re-loop
 def send_command_recieve_video(local_socket, addr):
-    global frame_to_display, start_server_viewing, is_client_connected
+    global frame_to_display, start_server_viewing, is_client_connected, is_pc_sending_frames
 
-    # break the if statment in here up into if start_server_viewing is True: and  if start_server_viewing is False and pc_is_sending is True:
+    # break the if statment in here up into if start_server_viewing is True: and  if start_server_viewing is False and is_pc_sending_frames is True:
     # it too many lines in one if else
 
     while is_client_connected: # this could just be True still tbh ..  im killing the thread with a return anyway
@@ -140,7 +147,8 @@ def send_command_recieve_video(local_socket, addr):
                         # so really not much to do.... just set is_client_connected = False return out of the loop and let this thread fucntion die,
                         # but make sure the @app.route('/client_status') logic update the index of connecton status + pending GET restarts 
 
-                        is_client_connected = False
+                        #is_client_connected = False
+                        set_pc_connection_state(False)
                         return
                 except Exception as e:
                     print(f"Send attempt {attempt+1} failed: {e}")
@@ -149,7 +157,7 @@ def send_command_recieve_video(local_socket, addr):
                 raise Exception("Failed to send command after {max_send_retries} attempts.")
             
             # if reached, start_server_view command sent, manage_camera should be sending frames back through the socket now
-            pc_is_sending = True
+            is_pc_sending_frames = True
             # now start collecting those frames from the OS buffer
             data_buffer = b""
             fourbyte_un_bigE_struct = struct.calcsize(">I")
@@ -186,14 +194,15 @@ def send_command_recieve_video(local_socket, addr):
                     print(f"Client disconnected: {e}")
                     # raise # ... no need to raise to anywhere, just return out and let thread die,
                     # setting is_client_connected = False should notify the user html via the /client_status GET logic
-                    is_client_connected = False
+                    # is_client_connected = False
+                    set_pc_connection_state(False)
                     return
             except Exception as e:
                 print(f"Error receiving/reading data: {e}")
             time.sleep(1)
         elif start_server_viewing is False:
-            if pc_is_sending is True:
-                print("start_server_viewing has been changed to False, but pc_is_sending is True, so ask PC to stop sending")
+            if is_pc_sending_frames is True:
+                print("start_server_viewing has been changed to False, but is_pc_sending_frames is True, so ask PC to stop sending")
                 max_send_retries = 3 
                 for attempt in range(max_send_retries):
                     try:
@@ -208,7 +217,7 @@ def send_command_recieve_video(local_socket, addr):
                 else:
                     raise Exception("Failed to send command after {max_send_retries} attempts.")
 
-                pc_is_sending = False
+                is_pc_sending_frames = False
             time.sleep(1)
         else:
             # start_server_viewing has not been toggled at all yet, ie. Start or STop has not been pressed at all, do nothing
@@ -216,15 +225,15 @@ def send_command_recieve_video(local_socket, addr):
 
 
 
-def make_placholder_frame():
-    black_frame = np.zeros((480, 640, 3), dtype=np.uint8)  
+def make_placholder_frame(frame_message):
+    placholder_frame = np.zeros((480, 640, 3), dtype=np.uint8)  
     # Create black frame, Each frame is uniform and easy to notate structure:
     # ((480, 640, 3)) -> "height 480, width 640, with 3 color channels (RGB)"
     # dtype (uint8)   -> "raw bytes as a flat array of unsigned 8-bit integers."
     
     cv2.putText(
-        black_frame,
-        "No video stream yet",
+        placholder_frame,
+        frame_message,
         org=(50, 240),               # x, y position of text
         fontFace=cv2.FONT_HERSHEY_SIMPLEX,
         fontScale=1,
@@ -232,35 +241,41 @@ def make_placholder_frame():
         thickness=2,
         lineType=cv2.LINE_AA
     )
-    _, black_frame_encoded = cv2.imencode('.jpg', black_frame)
-    return black_frame_encoded
+    _, placholder_frame = cv2.imencode('.jpg', placholder_frame)
+    return placholder_frame
 
 
-# THIS DOESNT NEED TO RUN AT ALL IF THE PC IS NOT SENDING ie pc_is_sending = True !!!!!!!!!!!!!!!!!
-# can i just change the while to: "while pc_is_sending is True:" ??
+# THIS DOESNT NEED TO RUN AT ALL IF THE PC IS NOT SENDING ie is_pc_sending_frames = True !!!!!!!!!!!!!!!!!
+# can i just change the while to: "while is_pc_sending_frames is True:" ??
 def generate_frames():
-    # needs a placeholder, if just an empty frame a page refresh was necessary after client starts streaming... why?
+    global frame_to_display, is_pc_sending_frames
+
+    no_stream_yet_placeholder = make_placholder_frame("No video stream yet")
+    error_encoding_placeholder = make_placholder_frame("Error encoding frame")
+    no_frame_in_queue_placeholder = make_placholder_frame("No frame in queue")
+
+    # needs a placeholder sent at the start, if just an empty frame a page refresh was necessary after client starts streaming... why?
     # "Browsers expect MJPEG streams to begin with a valid JPEG frame. If starting blank or malformed it will lock up.
     
-    black_frame_encoded = make_placholder_frame()
-    print(black_frame_encoded)
-
-    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + black_frame_encoded.tobytes() + b'\r\n')
-
-    global frame_to_display
     while True:
-        time.sleep(FPS)
-        with lock:
-            if frame_to_display is not None:
-                try:
-                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display + b'\r\n')  # no need for .tobytes() anymore
-                except Exception as e:
-                    print(f"Error encoding frame: {e}")
-                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' +  b'\r\n') # empty frame (white)
-            else:
-                yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + black_frame_encoded.tobytes() + b'\r\n')
-                time.sleep(2) # can wait an extra 2 seconds here as the blank image doesnt need to be full FPS
-
+        if is_pc_sending_frames is False or is_pc_sending_frames is None:
+            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + no_stream_yet_placeholder.tobytes() + b'\r\n')
+            time.sleep(1) # sleep a little bit if nothng being sent to VPS
+        else:
+            time.sleep(FPS) 
+            # sleep same rate as FPS set for VPS - this could be different from desktop so save bandwidth,
+            # so should also include the rate at which the frames are being added to the queue in the PC to be eficent,
+            # ie VPS_framerate variable, add to the send queue in manage_camera at that rate, and display here at that rate too,
+            # should be changeable failrly eazily from the web app and/or from the GUI??
+            with lock:
+                if frame_to_display is not None:
+                    try:
+                        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_to_display + b'\r\n')  # no need for .tobytes() anymore
+                    except Exception as e:
+                        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + error_encoding_placeholder.tobytes() + b'\r\n')
+                else:
+                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + no_frame_in_queue_placeholder.tobytes() + b'\r\n')
+                    time.sleep(0.2) # sleep a little bit if no frame in queue
 
 @app.route('/control', methods=['POST'])
 def control():
@@ -294,36 +309,62 @@ def control():
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+
+# Function to safely change connection state
+def set_pc_connection_state(value):
+    global is_client_connected
+    if is_client_connected != value:            # Just quickly makes sure no inconsistencys 
+        is_client_connected = value             # Set the state to the var
+        connected_state_change_event.set()      # Wake up waiting threads
+        connected_state_change_event.clear()    # resets the event back to an "unset" state
+
+# event.set() — "Unblock all current waiters"
+# Sets the internal flag to True.
+# All threads that are currently calling event.wait() will immediately unblock.
+# Any future calls to event.wait() will also not block, as long as the flag remains set.
+# Think of set() as ringing a bell: "Wake up, the thing you’re waiting for has happened!"
+
+# event.clear() — "Reset the event back to blocking mode"
+# Sets the internal flag to False.
+# Future calls to event.wait() will block again, until set() is called once more.
+# Think of clear() as silencing the bell so the next listener will wait until it's rung again.
+
+# in Flask's each route handler runs in its own thread by default, no worry about blocking
 @app.route('/client_status')
 def client_status():
-    global last_connected_state, is_client_connected
-
-    print(1119999, last_connected_state, is_client_connected)
-    #print("state 0: ", is_client_connected, last_connected_state)
+    # This should actually be all that's needed here:
+    global is_client_connected
+    connected_state_change_event.wait()                 # Wait until state changes before continuing
+    return jsonify({'connected': is_client_connected})  # Respond to web client
     
-    # Using the global state variable I will just store and refrence the last state vs current state every few seconds..
-    while True:
-        if is_client_connected != last_connected_state: 
-            # passes only if they are not the same, as both variable start off as None this will run only after client has connected
-            # last_connected_state is then set to is_client_connected, so on subsequent passes it will not run until something changes
-            # so anytine this runs - something has changed, so simply check the current state and set last_connected_state to that value
-            # update the html to notate the new state before relooping and waiting for another change to is_client_connected
-            print("Connected state changed: ", is_client_connected, last_connected_state)
-            if is_client_connected is False: 
-                last_connected_state = False
-                print("states 2: ", is_client_connected, last_connected_state)
-                return jsonify({"connected": False})
-            elif is_client_connected is True:
-                last_connected_state = True
-                print("states 3: ", is_client_connected, last_connected_state)
-                return jsonify({"connected": True})
-            else:
-                print("states wtffffffff: ", is_client_connected, last_connected_state)
-        # else:
-        #     pass
-        #     # print("nooo change")
-        #     #pass # just keep the connection open if nothing changed == "long polling"
-        time.sleep(1)
+    # global last_connected_state, is_client_connected
+
+    # print(1119999, last_connected_state, is_client_connected)
+    # #print("state 0: ", is_client_connected, last_connected_state)
+    
+    # # Using the global state variable I will just store and refrence the last state vs current state every few seconds..
+    # while True:
+    #     if is_client_connected != last_connected_state: 
+    #         # passes only if they are not the same, as both variable start off as None this will run only after client has connected
+    #         # last_connected_state is then set to is_client_connected, so on subsequent passes it will not run until something changes
+    #         # so anytine this runs - something has changed, so simply check the current state and set last_connected_state to that value
+    #         # update the html to notate the new state before relooping and waiting for another change to is_client_connected
+    #         print("Connected state changed: ", is_client_connected, last_connected_state)
+    #         if is_client_connected is False: 
+    #             last_connected_state = False
+    #             print("states 2: ", is_client_connected, last_connected_state)
+    #             return jsonify({"connected": False})
+    #         elif is_client_connected is True:
+    #             last_connected_state = True
+    #             print("states 3: ", is_client_connected, last_connected_state)
+    #             return jsonify({"connected": True})
+    #         else:
+    #             print("states wtffffffff: ", is_client_connected, last_connected_state)
+    #     # else:
+    #     #     pass
+    #     #     # print("nooo change")
+    #     #     #pass # just keep the connection open if nothing changed == "long polling"
+    #     time.sleep(1)
 
 # /client_status now implements long-polling here to stop constant checks from browser -> server to get the PC app's connected-to-server state
 # instead of many repettive GETs now just one "pending" GET
@@ -335,10 +376,9 @@ def client_status():
 
 
 # Chrome DevTools trying to check if the site has a known devtools-specific configuration (for debugging, like source maps or remote debugging endpoints).
-# actually... something else was delaying the load up not this, not necessary to block
-# @app.route('/.well-known/appspecific/com.chrome.devtools.json')
-# def suppress_chrome_probe():
-#     return '', 204
+@app.route('/.well-known/appspecific/com.chrome.devtools.json')
+def suppress_chrome_probe():
+    return '', 204
 
 @app.route('/favicon.ico')
 def favicon():
