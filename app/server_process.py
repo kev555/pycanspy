@@ -6,6 +6,7 @@ from flask import Flask, Response, render_template, request, jsonify, send_from_
 import threading
 import time
 import numpy as np
+import select
 
 app = Flask(__name__)
 frame_to_display = None
@@ -20,6 +21,40 @@ server_host = '0.0.0.0'
 is_client_connected = None
 last_connected_state = None
 start_server_viewing = None
+
+# PC app disconnects -> monitor_disconnect() function select.select's the socket and then MSG_PEEK's it every 1 second 
+# -> if in ready state, no problem - do nothing, but when an connection error or clean disconnected state (b'') is seen,
+# it changes is_client_connected = False
+# is_client_connected toggle then triggers @app.route('/client_status') logic,
+# the new current state (disconnected) is updated to the Web browser client by responding to the pending GET
+# a new pending GET for client status is immidiatly sent, awaiting another is_client_connected state change (to connected)
+
+# it's a pretty clean flow apart from @app.route('/client_status') logic -> 
+# Im using 2 global vars for present and past state and comparing contiuously for change
+# instead should be using a threading.Event
+
+# montiors a socket for disconnection
+# interestingly if socket.close is used (in manage_camera) it triggers exception
+def monitor_disconnect(sock):
+    global is_client_connected
+    while True:
+        try:
+            # Wait up to 1 second for readability
+            ready, _, _ = select.select([sock], [], [], 1.0)
+            if sock in ready:
+                data = sock.recv(1, socket.MSG_PEEK)
+                if not data:
+                    print("Client disconnected!!!!!!!!! watcher!!!!!")
+                    is_client_connected = False
+                    break
+        except (ConnectionResetError, ConnectionAbortedError):
+            print("Client disconnected abruptly")
+            is_client_connected = False
+            break
+        except Exception as e:
+            print(f"Monitor error: {e}")
+            break
+        time.sleep(0.5)
 
 def create_master_socket():
     global server_host, server_recieve_port, local_master_socket, is_client_connected
@@ -39,6 +74,8 @@ def create_master_socket():
             break
         print("PC app connected!!:")
         is_client_connected = True
+        # Start the monitor_disconnect and send_command_recieve_video
+        threading.Thread(target=monitor_disconnect, args=(local_socket,), daemon=True).start()
         threading.Thread(target=send_command_recieve_video, name=f"Thread-ClientIP-{addr[0]}", args=(local_socket, addr)).start()
 
 # This thread / function is created for each new connection to the server from PC, although that's just once for now
@@ -198,7 +235,8 @@ def make_placholder_frame():
     return black_frame_encoded
 
 
-
+# THIS DOESNT NEED TO RUN AT ALL IF THE PC IS NOT SENDING ie pc_is_sending = True !!!!!!!!!!!!!!!!!
+# can i just change the while to: "while pc_is_sending is True:" ??
 def generate_frames():
     # needs a placeholder, if just an empty frame a page refresh was necessary after client starts streaming... why?
     # "Browsers expect MJPEG streams to begin with a valid JPEG frame. If starting blank or malformed it will lock up.
@@ -206,15 +244,10 @@ def generate_frames():
     black_frame_encoded = make_placholder_frame()
     print(black_frame_encoded)
 
-
     yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + black_frame_encoded.tobytes() + b'\r\n')
 
     global frame_to_display
     while True:
-        # print("generate_framesssssssssssssssss") 
-        # 
-        # 
-        # THIS DOESNT NEED TO RUN AT ALL IF THE PC IS NOT SENDING ie pc_is_sending = True !!!!!!!!!!!!!!!!!
         time.sleep(FPS)
         with lock:
             if frame_to_display is not None:
@@ -254,11 +287,11 @@ def control():
 # or any IP assigned to your machine on port 1705 will trigger this handler:
 
 
+# Endpoint for publishing the the video feed 
+# see SSH tunneling, UDP streaming protocols.txt for details
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
-# Endpoint for publishing the the video feed 
-# see SSH tunneling, UDP streaming protocols.txt for details
 
 @app.route('/client_status')
 def client_status():
