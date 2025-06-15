@@ -18,7 +18,7 @@ local_master_socket = None
 server_recieve_port = 5001
 server_host = '0.0.0.0'
 
-is_client_connected = None
+is_pc_connected = None
 last_connected_state = None
 start_server_viewing = None
 is_pc_sending_frames = None
@@ -27,10 +27,10 @@ connected_state_change_event = threading.Event()
 
 # PC app disconnects -> monitor_disconnect() function select.select's the socket and then MSG_PEEK's it every 1 second 
 # -> if in ready state, no problem - do nothing, but when an connection error or clean disconnected state (b'') is seen,
-# it changes is_client_connected = False
-# is_client_connected toggle then triggers @app.route('/client_status') logic,
+# it changes is_pc_connected = False
+# is_pc_connected toggle then triggers @app.route('/client_status') logic,
 # the new current state (disconnected) is updated to the Web browser client by responding to the pending GET
-# a new pending GET for client status is immidiatly sent, awaiting another is_client_connected state change (to connected)
+# a new pending GET for client status is immidiatly sent, awaiting another is_pc_connected state change (to connected)
 
 # it's a pretty clean flow apart from @app.route('/client_status') logic -> 
 # Im using 2 global vars for present and past state and comparing contiuously for change
@@ -41,7 +41,7 @@ connected_state_change_event = threading.Event()
 # interestingly if socket.close() is used (in manage_camera) it triggers exception (ConnectionResetError, ConnectionAbortedError),
 # whereas if socket.shutdown(socket.SHUT_RDWR) is used, it sends the b'' so "if not data" is properly triggered
 def monitor_disconnect(sock):
-    global is_client_connected
+    global is_pc_connected
     while True:
         try:
             # Wait up to 1 second for readability
@@ -50,12 +50,12 @@ def monitor_disconnect(sock):
                 data = sock.recv(1, socket.MSG_PEEK)
                 if not data:
                     print("Client disconnected!")
-                    #is_client_connected = False
+                    #is_pc_connected = False
                     set_pc_connection_state(False)
                     break
         except (ConnectionResetError, ConnectionAbortedError):
             print("Client disconnected abruptly")
-            #is_client_connected = False
+            #is_pc_connected = False
             set_pc_connection_state(False)
             break
         except Exception as e:
@@ -64,7 +64,7 @@ def monitor_disconnect(sock):
         time.sleep(0.5)
 
 def create_master_socket():
-    global server_host, server_recieve_port, local_master_socket, is_client_connected
+    global server_host, server_recieve_port, local_master_socket, is_pc_connected
 
     local_master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     local_master_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # i think i used this when windows locked a port from a dead process, is this safe??
@@ -80,14 +80,14 @@ def create_master_socket():
             print(f"Problem accepting connection: {e}")
             break
         print("PC app connected!!:")
-        #is_client_connected = True
+        #is_pc_connected = True
         set_pc_connection_state(True)
         # Start the monitor_disconnect and send_command_recieve_video
         threading.Thread(target=monitor_disconnect, args=(local_socket,), daemon=True).start()
         threading.Thread(target=send_command_recieve_video, name=f"Thread-ClientIP-{addr[0]}", args=(local_socket, addr)).start()
 
 # This thread / function is created for each new connection to the server from PC, although that's just once for now
-# when PC disconnects (is_client_connected = False !) the while should stop running, but will it destory the socket? of course... that IS disconnecting, 
+# when PC disconnects (is_pc_connected = False !) the while should stop running, but will it destory the socket? of course... that IS disconnecting, 
 # so then just make sure everthing is clean after a socket disconnection (listen for it with xxx
 # then just make sure it's ready to re-acdept the connection
 # So assuming the PC app abruptly disconnects the socket, how can i detect and deal with it here?
@@ -95,7 +95,7 @@ def create_master_socket():
 # as already knonw at this point-> an empty byte string "b''" will be read upon a disconnection, so check for that at the revc(),
 # sendall() or send() will also detect it with raising a BrokenPipeError or ConnectionResetError
 
-# SOO: when a connection break is detected -> is_client_connected should be set to False
+# SOO: when a connection break is detected -> is_pc_connected should be set to False
 # Then add the logic to clean and re-await new connection
 # also ive already tried to designed the logic for checking an notifying the user of connected state in the:
 # 
@@ -112,12 +112,12 @@ def create_master_socket():
 
 # start_server_viewing = False + is_pc_sending_frames = False ---> re-loop
 def send_command_recieve_video(local_socket, addr):
-    global frame_to_display, start_server_viewing, is_client_connected, is_pc_sending_frames
+    global frame_to_display, start_server_viewing, is_pc_connected, is_pc_sending_frames
 
     # break the if statment in here up into if start_server_viewing is True: and  if start_server_viewing is False and is_pc_sending_frames is True:
     # it too many lines in one if else
 
-    while is_client_connected: # this could just be True still tbh ..  im killing the thread with a return anyway
+    while is_pc_connected: # this could just be True still tbh ..  im killing the thread with a return anyway
         #print("Should I send a command to the PC app?")
         if start_server_viewing is True:
             print("start_server_viewing has been changed to True, so ask PC to start sending")
@@ -130,7 +130,7 @@ def send_command_recieve_video(local_socket, addr):
                     break
                 except (BrokenPipeError, ConnectionResetError) as e:
                         print(f"Connection broken during send attempt {attempt+1}: {e}")
-                        # So what to do now? set is_client_connected to false, then ...? 
+                        # So what to do now? set is_pc_connected to false, then ...? 
                         # break out of the for loop and continue, or return out of the entire while loop?
                         # no i cant contine ... it will start trying to read from a broken socket below.. so need to return out and end this hread.. but how to do it gracefully??
 
@@ -144,10 +144,10 @@ def send_command_recieve_video(local_socket, addr):
                         # but will local_master_socket.listen(1) affect this? will a broken socket be considered closed??
                         # oh never mind that "backlog size" is only for the master socket itself not the cild sockets ot creates 
                         # the broken local_socket object will just die and be cleaned with the thread
-                        # so really not much to do.... just set is_client_connected = False return out of the loop and let this thread fucntion die,
+                        # so really not much to do.... just set is_pc_connected = False return out of the loop and let this thread fucntion die,
                         # but make sure the @app.route('/client_status') logic update the index of connecton status + pending GET restarts 
 
-                        #is_client_connected = False
+                        #is_pc_connected = False
                         set_pc_connection_state(False)
                         return
                 except Exception as e:
@@ -193,8 +193,8 @@ def send_command_recieve_video(local_socket, addr):
             except (ConnectionResetError, ConnectionAbortedError) as e:
                     print(f"Client disconnected: {e}")
                     # raise # ... no need to raise to anywhere, just return out and let thread die,
-                    # setting is_client_connected = False should notify the user html via the /client_status GET logic
-                    # is_client_connected = False
+                    # setting is_pc_connected = False should notify the user html via the /client_status GET logic
+                    # is_pc_connected = False
                     set_pc_connection_state(False)
                     return
             except Exception as e:
@@ -279,9 +279,9 @@ def generate_frames():
 
 @app.route('/control', methods=['POST'])
 def control():
-    global start_server_viewing, is_client_connected
+    global start_server_viewing, is_pc_connected
 
-    if is_client_connected:         # Only allow changing streaming state when the PC client is actually connected...!
+    if is_pc_connected:         # Only allow changing streaming state when the PC client is actually connected...!
         data = request.get_json()
         command = data.get('command')
         print(f"Received command: {command}") # ???????????
@@ -312,9 +312,9 @@ def video_feed():
 
 # Function to safely change connection state
 def set_pc_connection_state(value):
-    global is_client_connected
-    if is_client_connected != value:            # Just quickly makes sure no inconsistencys 
-        is_client_connected = value             # Set the state to the var
+    global is_pc_connected
+    if is_pc_connected != value:            # Just quickly makes sure no inconsistencys 
+        is_pc_connected = value             # Set the state to the var
         connected_state_change_event.set()      # Wake up waiting threads
         connected_state_change_event.clear()    # resets the event back to an "unset" state
 
@@ -329,37 +329,42 @@ def set_pc_connection_state(value):
 # Future calls to event.wait() will block again, until set() is called once more.
 # Think of clear() as silencing the bell so the next listener will wait until it's rung again.
 
+@app.route('/client_status_reloadCheck')
+def client_status_reloadCheck():
+    global is_pc_connected
+    return jsonify({'connected': is_pc_connected})  # Respond to web client
+
 # in Flask's each route handler runs in its own thread by default, no worry about blocking
 @app.route('/client_status')
 def client_status():
     # This should actually be all that's needed here:
-    global is_client_connected
+    global is_pc_connected
     connected_state_change_event.wait()                 # Wait until state changes before continuing
-    return jsonify({'connected': is_client_connected})  # Respond to web client
+    return jsonify({'connected': is_pc_connected})  # Respond to web client
     
-    # global last_connected_state, is_client_connected
+    # global last_connected_state, is_pc_connected
 
-    # print(1119999, last_connected_state, is_client_connected)
-    # #print("state 0: ", is_client_connected, last_connected_state)
+    # print(1119999, last_connected_state, is_pc_connected)
+    # #print("state 0: ", is_pc_connected, last_connected_state)
     
     # # Using the global state variable I will just store and refrence the last state vs current state every few seconds..
     # while True:
-    #     if is_client_connected != last_connected_state: 
+    #     if is_pc_connected != last_connected_state: 
     #         # passes only if they are not the same, as both variable start off as None this will run only after client has connected
-    #         # last_connected_state is then set to is_client_connected, so on subsequent passes it will not run until something changes
+    #         # last_connected_state is then set to is_pc_connected, so on subsequent passes it will not run until something changes
     #         # so anytine this runs - something has changed, so simply check the current state and set last_connected_state to that value
-    #         # update the html to notate the new state before relooping and waiting for another change to is_client_connected
-    #         print("Connected state changed: ", is_client_connected, last_connected_state)
-    #         if is_client_connected is False: 
+    #         # update the html to notate the new state before relooping and waiting for another change to is_pc_connected
+    #         print("Connected state changed: ", is_pc_connected, last_connected_state)
+    #         if is_pc_connected is False: 
     #             last_connected_state = False
-    #             print("states 2: ", is_client_connected, last_connected_state)
+    #             print("states 2: ", is_pc_connected, last_connected_state)
     #             return jsonify({"connected": False})
-    #         elif is_client_connected is True:
+    #         elif is_pc_connected is True:
     #             last_connected_state = True
-    #             print("states 3: ", is_client_connected, last_connected_state)
+    #             print("states 3: ", is_pc_connected, last_connected_state)
     #             return jsonify({"connected": True})
     #         else:
-    #             print("states wtffffffff: ", is_client_connected, last_connected_state)
+    #             print("states wtffffffff: ", is_pc_connected, last_connected_state)
     #     # else:
     #     #     pass
     #     #     # print("nooo change")

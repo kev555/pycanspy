@@ -40,7 +40,7 @@
                     "PC Client Connected!. Press Start to request PC to start streaming and Stop to request PC to stop streaming";
             } else {
                 document.getElementById("status").innerText =
-                    "Waiting for connection... Pressing Start or Stop won't do anything yet";
+                    "PC disconnected... Pressing Start or Stop won't do anything yet";
             }
             await checkClientStatus(); // the recursive call itself obviously must be awaited for subsequent runs to be synchronous
         } catch (err) {
@@ -48,6 +48,20 @@
         } 
     }    
     checkClientStatus()
+
+    async function reloadCheck_checkClientStatus() {
+        const response = await fetch('/client_status_reloadCheck');
+        const data = await response.json();
+        if (data.connected === true) {
+                document.getElementById("status").innerText =
+                    "PC Client Connected!. Press Start to request PC to start streaming and Stop to request PC to stop streaming";
+            } else if (data.connected === false)  {
+                document.getElementById("status").innerText =
+                    "PC disconnected... Pressing Start or Stop won't do anything yet";
+            }
+            // no need to check for None, just do nothing
+    }
+    reloadCheck_checkClientStatus()
 
     </script>
 </body>
