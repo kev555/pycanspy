@@ -14,8 +14,15 @@ recording = False
 camera_in_use = False
 server_viewing = False
 exit_command = False
-FPS = 1 / 5  # leave it at 5 frames per second so as not to exhaust VPS resources during testing
 clip_interval_secs = 5
+
+
+local_viewing_FPS = 1 / 15      # 15 frames per second for local viewing, make this changeable
+remote_viewing_FPS = 1 / 5      # 5 frames per second for VPS, make this changeable
+reset_VPS_FPS_timer = True      # needs to be true at the start of each remote_viewing set
+
+# FPS_ratio = remote_viewing_FPS / local_viewing_FPS
+# only add to the queue every *FPS_ratio frame read* iterations
 
 # OpenCV Objs:
 writer = None
@@ -115,7 +122,7 @@ def local_master_socket_listener():
 # The Local sockets can be many
 def listen_commands_on_socket_thread(socket_conn, addr):
     global camera_in_use, exit_command, process_running, recording
-    global show_stream, server_viewing
+    global show_stream, server_viewing, reset_VPS_FPS_timer
 
     stop_send_frames_to_VPS_event_obj = threading.Event()
     
@@ -148,6 +155,7 @@ def listen_commands_on_socket_thread(socket_conn, addr):
                 VPS_send_thread = threading.Thread(target=send_frames_to_VPS, name=f"VPS_Send_Thread", args=(socket_conn,stop_send_frames_to_VPS_event_obj,))
                 VPS_send_thread.start()
                 server_viewing = True
+                reset_VPS_FPS_timer = True
             elif cmd == "stop_server_view":
                 # signal stop to send_frames_to_VPS(),
                 # and toggle stop sending fames to the queue
@@ -172,13 +180,13 @@ def listen_commands_on_socket_thread(socket_conn, addr):
 def send_frames_to_VPS(socket_conn, stop_send_frames_to_VPS_event_obj):
     while not stop_send_frames_to_VPS_event_obj.is_set():
         try:
-            frame = frame_queue.get(timeout=1)
+            frame = frame_queue.get(timeout=1) # this will wait for frames on the queue, so any manual FPS set in the cam_frame_loop() will be propgated here and thus to the VPS
             success, encoded_frame = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50]) # encode it now, before transmitting!!
             if not success:
                 raise RuntimeError("Failed to encode frame")
             
             frame_bytes = encoded_frame.tobytes()
-            frame_size_desc = struct.pack(">I", len(frame_bytes))  
+            frame_size_desc = struct.pack(">I", len(frame_bytes))
             socket_conn.sendall(frame_size_desc + frame_bytes)
             print("[M.C.:] Sent 1 frame to the VPS")
         except queue.Empty:
@@ -193,10 +201,18 @@ def send_frames_to_VPS(socket_conn, stop_send_frames_to_VPS_event_obj):
 # cam_frame_loop() will block until camera_in_use is False or exit_command is True
 # if camera_in_use is True but exit_command is also True, cam_frame_loop() will set: 
 # camera_in_use = False and process_running = False, killing the entire __main__ loop below
+
+#FPS:
+# a 30fps camera typically results in a 30fps loop due to webcam_obj.read() being a blocking call that synchronizes with the camera's output. 
+# To reduce this to 15fps, introducing time.sleep(1/15) is a practical method. '
+# 'This will cause the loop to pause, effectively reducing the displayed frame rate, '
+# 'but webcam_obj.read() will then discard older, unread frames in the camera's buffer to provide the latest available frame, 
+# meaning you will be skipping frames rather than processing every single one the camera captures.
+
 def cam_frame_loop():
     global writer, camera_in_use, exit_command, process_running, webcam_obj, recording
     global local_host, local_port, show_stream, output_dir, clip_interval_secs
-    global frame_queue
+    global frame_queue, reset_VPS_FPS_timer
 
     print("[M.C.:] Opening webcam.")
     webcam_obj = cv2.VideoCapture(0) 
@@ -228,14 +244,29 @@ def cam_frame_loop():
                 show_stream = False
                 cv2.destroyWindow("Live")
         
-        # Obviously not going to try to process and send the frames here, send them to a queue, then use a thread to work off the queue
-        if server_viewing: 
-            print("sent a frame to the queue")
-            try:
-                frame_queue.put(frame, block=False)     # put frame in queue
-            except queue.Full:
-                print("Frame queue is full (or blocked?) - A frame was dropped")
-                pass
+        # # Obviously not going to try to process and send the frames here, send them to a queue, then use a thread to work off the queue
+        # if server_viewing: 
+        #     print("sent a frame to the queue")
+        #     try:
+        #         frame_queue.put(frame, block=False)     # put frame in queue
+        #     except queue.Full:
+        #         print("Frame queue is full (or blocked?) - A frame was dropped")
+        #         pass
+
+        if server_viewing:
+            if reset_VPS_FPS_timer is True:
+                VPS_frame_end_time = time.time() + remote_viewing_FPS
+            
+            if VPS_frame_end_time > time.time():
+                try:
+                    frame_queue.put(frame, block=False)     # put frame in queue
+                except queue.Full:
+                    print("Frame queue is full (or blocked?) - A frame was dropped")
+                    pass
+                reset_VPS_FPS_timer = True      # if timer was reached, frame was added, reset timer
+            else:
+                reset_VPS_FPS_timer = False     # if timer wasn't reached, no frame added, no need to reset timer
+            
 
         if recording:
             if writer is None:
@@ -243,11 +274,11 @@ def cam_frame_loop():
                 output_file = os.path.join(output_dir, f"webcam_{time.strftime("%Y%m%d_%H%M%S")}.mp4")
                 fourcc = cv2.VideoWriter_fourcc(*'avc1')
                 writer = cv2.VideoWriter(output_file, fourcc, 20.0, (640, 480))
-                end_time = time.time() + clip_interval_secs
+                recording_end_time = time.time() + clip_interval_secs
             
             # write a frame each pass until clip time specified has elapsed
             # once elapsed, release the writer so the if statement above registers a new clip filename etc.
-            if end_time > time.time():
+            if recording_end_time > time.time():
                 writer.write(frame)
             else:
                 writer.release()
@@ -265,7 +296,7 @@ def cam_frame_loop():
                 camera_in_use = False
                 break
         
-        time.sleep(FPS)
+        time.sleep(local_viewing_FPS - 0.002) # no need for the loop to ever be running faster than the main FPS
     print("[M.C.:] cam_frame_loop finished")
 
 def clean_camera():
