@@ -7,6 +7,8 @@ import threading
 import time
 import numpy as np
 import select
+import ssl
+
 
 app = Flask(__name__)
 frame_to_display = None
@@ -40,14 +42,14 @@ connected_state_change_event = threading.Event()
 # montiors a socket for disconnection
 # interestingly if socket.close() is used (in manage_camera) it triggers exception (ConnectionResetError, ConnectionAbortedError),
 # whereas if socket.shutdown(socket.SHUT_RDWR) is used, it sends the b'' so "if not data" is properly triggered
-def monitor_disconnect(sock):
+def monitor_disconnect(local_TCP_connected_socket):
     global is_pc_connected
     while True:
         try:
             # Wait up to 1 second for readability
-            ready, _, _ = select.select([sock], [], [], 1.0)
-            if sock in ready:
-                data = sock.recv(1, socket.MSG_PEEK)
+            ready, _, _ = select.select([local_TCP_connected_socket], [], [], 1.0)
+            if local_TCP_connected_socket in ready:
+                data = local_TCP_connected_socket.recv(1, socket.MSG_PEEK)
                 if not data:
                     print("Client disconnected!")
                     #is_pc_connected = False
@@ -63,28 +65,54 @@ def monitor_disconnect(sock):
             break
         time.sleep(0.5)
 
+# Important info on the sockets:
+# Both master and accepted sockets are instances of the same class (socket.socket)
+# The master socket is in passive mode:
+# It waits for clients to connect.
+# It uses .bind() and .listen().
+# It cannot send or receive data.
+# The accepted socket is in active mode:
+# Returned by .accept().
+# Represents a unique TCP connection.
+# Can send and receive data.
+# The OS distinguishes multiple connections on the same server port by tracking the full 4-tuple:
+# (server_ip, server_port, client_ip, client_port).
+# The master (listening) socket is always bound to a 2-tuple: (server_ip, server_port)
+# It listens on that IP and port for incoming connections but is not connected to any client yet.
+# The full 4-tuple only exists on accepted/connected sockets, where the client IP and client port come into play.
+
+# You should wrap accepted sockets in TLS, never the master socket.
+# Wrapping the master socket in TLS is fundamentally wrong because TLS handshake needs an established connection to start.
+
 def create_master_socket():
     global server_host, server_recieve_port, local_master_socket, is_pc_connected
 
     local_master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     local_master_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # i think i used this when windows locked a port from a dead process, is this safe??
     local_master_socket.bind((server_host, server_recieve_port))
-    local_master_socket.listen(1) 
-    # 1 = single connection... which is ok for now. Would i have multiple Client PC processes connecting to this? Surely it would be a new instances of this process for each client?
-    
+    local_master_socket.listen(1)
+
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(certfile="certs/my_cert.pem", keyfile="certs/my_key.pem")
+
     while True:  
         print("Server socket created, waiting here for a new client to connect...")
         try:
-            local_socket, addr = local_master_socket.accept()
+            local_TCP_connected_socket, addr = local_master_socket.accept()
+            try:
+                local_TCP_connected_socket = context.wrap_socket(local_TCP_connected_socket, server_side=True)
+            except ssl.SSLError as e:
+                print(f"[!] SSL error: {e}")
         except Exception as e:
             print(f"Problem accepting connection: {e}")
             break
+
         print("PC app connected!!:")
-        #is_pc_connected = True
         set_pc_connection_state(True)
+
         # Start the monitor_disconnect and send_command_recieve_video
-        threading.Thread(target=monitor_disconnect, args=(local_socket,), daemon=True).start()
-        threading.Thread(target=send_command_recieve_video, name=f"Thread-ClientIP-{addr[0]}", args=(local_socket, addr)).start()
+        threading.Thread(target=monitor_disconnect, args=(local_TCP_connected_socket,), daemon=True).start()
+        threading.Thread(target=send_command_recieve_video, name=f"Thread-ClientIP-{addr[0]}", args=(local_TCP_connected_socket, addr)).start()
 
 # This thread / function is created for each new connection to the server from PC, although that's just once for now
 # when PC disconnects (is_pc_connected = False !) the while should stop running, but will it destory the socket? of course... that IS disconnecting, 
@@ -108,10 +136,10 @@ def create_master_socket():
 
 # So when start_server_viewing becomes False, it will break out of the reading loop, but stay in the checking loop,
 # and when it become True again it will try to send the PC start_server_view request again
-# No need to local_socket.close() the socket, just instruct the PC app to stop sending
+# No need to local_TCP_connected_socket.close() the socket, just instruct the PC app to stop sending
 
 # start_server_viewing = False + is_pc_sending_frames = False ---> re-loop
-def send_command_recieve_video(local_socket, addr):
+def send_command_recieve_video(local_TCP_connected_socket, addr):
     global frame_to_display, start_server_viewing, is_pc_connected, is_pc_sending_frames
 
     # break the if statment in here up into if start_server_viewing is True: and  if start_server_viewing is False and is_pc_sending_frames is True:
@@ -124,7 +152,7 @@ def send_command_recieve_video(local_socket, addr):
             max_send_retries = 3
             for attempt in range(max_send_retries):
                 try:
-                    local_socket.sendall(("start_server_view" + '\n').encode())
+                    local_TCP_connected_socket.sendall(("start_server_view" + '\n').encode())
                     # if reached, message sent, break out of for loop
                     print("start_server_view message sent to PC")
                     break
@@ -140,14 +168,13 @@ def send_command_recieve_video(local_socket, addr):
 
                         # what else needs to be done to ensure the thread will start again upon new re-connection?
                         # nothing i think, the master socket listening line:
-                        # local_socket, addr = local_master_socket.accept() will just keep waiting and accepting new connections,
+                        # local_TCP_connected_socket, addr = local_master_socket.accept() will just keep waiting and accepting new connections,
                         # but will local_master_socket.listen(1) affect this? will a broken socket be considered closed??
                         # oh never mind that "backlog size" is only for the master socket itself not the cild sockets ot creates 
-                        # the broken local_socket object will just die and be cleaned with the thread
+                        # the broken local_TCP_connected_socket object will just die and be cleaned with the thread
                         # so really not much to do.... just set is_pc_connected = False return out of the loop and let this thread fucntion die,
                         # but make sure the @app.route('/client_status') logic update the index of connecton status + pending GET restarts 
 
-                        #is_pc_connected = False
                         set_pc_connection_state(False)
                         return
                 except Exception as e:
@@ -165,7 +192,7 @@ def send_command_recieve_video(local_socket, addr):
                 while start_server_viewing is True:
 
                     while len(data_buffer) < fourbyte_un_bigE_struct:
-                        chunk = local_socket.recv(4096)
+                        chunk = local_TCP_connected_socket.recv(4096)
                         if not chunk:
                             raise ConnectionAbortedError("Client disconnected")
                         data_buffer += chunk
@@ -175,7 +202,7 @@ def send_command_recieve_video(local_socket, addr):
                     data_buffer = data_buffer[fourbyte_un_bigE_struct:]
                     
                     while len(data_buffer) < toal_frame_size_as_int:
-                        chunk = local_socket.recv(4096)
+                        chunk = local_TCP_connected_socket.recv(4096)
                         if not chunk:
                             raise ConnectionAbortedError("Client disconnected")
                         data_buffer += chunk
@@ -194,7 +221,7 @@ def send_command_recieve_video(local_socket, addr):
                     print(f"Client disconnected: {e}")
                     # raise # ... no need to raise to anywhere, just return out and let thread die,
                     # setting is_pc_connected = False should notify the user html via the /client_status GET logic
-                    # is_pc_connected = False
+                    
                     set_pc_connection_state(False)
                     return
             except Exception as e:
@@ -206,7 +233,7 @@ def send_command_recieve_video(local_socket, addr):
                 max_send_retries = 3 
                 for attempt in range(max_send_retries):
                     try:
-                        local_socket.sendall(("stop_server_view" + '\n').encode())
+                        local_TCP_connected_socket.sendall(("stop_server_view" + '\n').encode())
                         
                         # if this is reached, the message was sent successfully, break out of the for loop without trying the remaining times
                         print("stop_server_view message sent to PC")
@@ -293,6 +320,8 @@ def control():
             return f"Command {command} received", 200
         else:
             return 'Invalid command', 400
+    else:
+        return 'PC not connected', 503
 # api endpoint for recieving a command from webpage
 # these Flask routes are same like JS listeners. They are "URL-based event listeners", they dont block obviously, their "listening" is asynchronous
 # but the code inside their route function is synchronous as it's running in the current app.run() thread/process, so keep it light

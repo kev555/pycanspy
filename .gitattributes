@@ -1,0 +1,3 @@
+# Prevent Git from modifying TLS files
+*.pem binary
+*.key binary
