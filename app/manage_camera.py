@@ -69,12 +69,18 @@ def connectToExternalSocket(temp_socket):
         max_connect_retries = 3                         # try 3 times, incase the peer is busy
         for attempt in range(max_connect_retries):
             try:
+                # with SSL:
                 context = ssl.create_default_context()
                 context.load_verify_locations(cafile="certs/my_cert.pem")
                 context.check_hostname = False
                 tls_socket = context.wrap_socket(temp_socket, server_hostname=server_host)
                 tls_socket.connect((server_host, server_recieve_port))
                 return tls_socket
+                
+                # without ssl:
+                # temp_socket.connect((server_host, server_recieve_port))
+                # return temp_socket
+                
             except Exception as e:
                 print(f"Connection attempt {attempt+1} failed: {e}")
                 time.sleep(1)

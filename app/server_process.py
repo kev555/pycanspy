@@ -99,10 +99,78 @@ def create_master_socket():
         print("Server socket created, waiting here for a new client to connect...")
         try:
             local_TCP_connected_socket, addr = local_master_socket.accept()
-            try:
-                local_TCP_connected_socket = context.wrap_socket(local_TCP_connected_socket, server_side=True)
-            except ssl.SSLError as e:
-                print(f"[!] SSL error: {e}")
+            print("[*] local_TCP_connected_socket created!!!")
+            try:                
+                # peek = local_TCP_connected_socket.recv(3, socket.MSG_PEEK)
+                # THIS WILL BLOCK IF CLIENT ATTEMPTS TO CONNECT WITHOUT TLS.... BECAUSE IT'S ATTEMPTING TO READ 3 BYTES BUT CLIENT DOES NOT SEND ANY BYTES AT ALL AT THE START 
+                # OF A PLAIN CONNECTION IN THE WAY IT DOES FOR TLS CONNECTION (WITH THE "HELLO CLIENT" HANDSHAKE MESSAGE BEING SENT AUTOMATICALLY)
+                # IE. IT WONT EVEN SEE AN EMPTY BYTE STRING (b''), THERE WILL BE NOTHING TO READ UNTIL THE CLIENT MANUALLY SENDS SOMETHING, 
+                # SO IT WILL JUST HANG HERE AND BLOCK THE PROCESS
+
+                # This is why we need to use a "selector". So what is that?
+                # A selector is a system-level mechanism (or a high-level wrapper like Python’s selectors module) that allows you to efficiently monitor multiple sockets or 
+                # file-like objects and tells you which ones are ready for I/O — meaning you can safely read from, write to, or check them for errors without blocking. 
+                # It doesn’t perform any I/O itself; instead, it acts like a traffic controller, alerting your code to which connections are ready for action. 
+                # Being “ready” doesn’t necessarily mean there’s meaningful data — for example, a socket may be ready for reading but recv() could still return b'', 
+                # indicating the connection was closed. 
+                # Selectors are foundational in event-driven and non-blocking network programming, 
+                # enabling a single-threaded program to efficiently handle many simultaneous connections.
+                
+                # Interesting!:
+                # select() was designed before threading and asynchronous libraries were common, especially in Unix systems.
+                # Introduced in BSD Unix (1983), select() came well before multithreading became widely supported or portable.
+                # At the time, the standard way to handle multiple network connections was to:
+                # Use multiple processes (fork()), or Block the entire program waiting on one recv(), which doesn't scale.
+                # So select() was revolutionary because it let a single-threaded program monitor many file descriptors (like sockets) at once, 
+                # and act only when something was ready — avoiding blocking and wasted CPU.
+
+                # select is the original "I/O readiness API".
+                # More modern alternatives include: poll, epoll (Linux), kqueue (BSD/macOS), and IOCP (Windows).
+                # I/O readiness APIs are used to implement event loops (e.g., like in JavaScript),
+                # enabling pseudo-concurrent I/O in a single-threaded, single-process program.
+                # This approach was essential before programmatic threading became common, portable, or efficient.
+                # Modern I/O frameworks and languages (like Node.js, asyncio, etc.) use event loops built on readiness APIs.
+
+                # So... Use select :)
+                # select() takes lists of sockets (or file descriptors) and tells you which are ready for I/O.
+                # syntax:
+                #
+                # readable, writable, errored = select.select(
+                #     list_of_sockets_or_fds_to_check_for_read_readiness,
+                #     list_of_sockets_or_fds_to_check_for_write_readiness,
+                #     list_of_sockets_or_fds_to_check_for_error_conditions,
+                #     timeout_in_seconds)
+
+                # The timeout specifies how long select will wait for sockets to become ready.
+                # For example, with timeout=5, select blocks for up to 5 seconds,
+                # but returns immediately as soon as at least one socket is ready.
+                # This makes it like an efficient, event-driven wait (not a passive sleep).
+                # If timeout is 0, select performs a non-blocking poll — it checks the status and returns immediately.
+
+                # print("[*] local_TCP_connected_socket created 2222222222222!!!", peek)
+
+                ready, _, _ = select.select([local_TCP_connected_socket], [], [], 3.0)  # 3s timeout
+                if local_TCP_connected_socket in ready:
+
+                    # this means local_TCP_connected_socket is readable ... ie. there is data in the socket waiting to be read, so peek it:
+                    peek = local_TCP_connected_socket.recv(3, socket.MSG_PEEK)
+                    if peek.startswith(b'\x16\x03'):
+                        print("[*] TLS client detected")
+                        try:
+                            local_TCP_connected_socket = context.wrap_socket(local_TCP_connected_socket, server_side=True)
+                            print("[+] TLS handshake successful")
+                        except ssl.SSLError as e:
+                            print(f"[!] SSL handshake failed: {e}")
+                            local_TCP_connected_socket.close()
+                            continue  # ???
+                    else:
+                        print("[*] Plaintext in the socket pipe, maybe cleient has already sent some data...?")
+                else:
+                    # No data available = a plaintext client that hasn't sent any data yet
+                    print("[*] Plaintext client connected")
+                    
+            except Exception as e:
+                print(f"[!] Problem peeking connection: {e}")
         except Exception as e:
             print(f"Problem accepting connection: {e}")
             break
