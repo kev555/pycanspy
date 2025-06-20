@@ -145,15 +145,73 @@
 **Minor:**  
 - Change to long polling in JavaScript. - done  
 - Remove pickle usage for server to improve speed (unnecessary for this setup; more details forthcoming) - done 
-- Implement stop functionality from `server_process.py` HTML - 
-- Add TLS encryption to sockets.  
-- Make `client_socket.sendall` asynchronous with `asyncio`.  
-- Eventually add WebSocket support browser ↔ server.
+- Implement stop functionality from `server_process.py` HTML - done
+- Add TLS encryption to sockets.  - done
+- Make `client_socket.sendall` asynchronous with `asyncio`.  - not necessary as of now
+- Eventually add WebSocket support browser ↔ server. - !!!
+    ---ACTUALLY, at this point I will switch to websockets on the backend too (PC - VPS) and stop dealing with raw TCP / stop reassembling Bytes in to frames manually 
 
 **Major:**  
 - **Remote viewing:**  
-  - Later, implement P2P streaming with NAT traversal techniques.
+  - Later, implement P2P streaming with NAT traversal techniques !!!
+     --- WebRTC peer - peer needs websockets to function properly, a lot of messages need to be passed for signalling / setup,
+     --- using REST endpoint for this would be way too cumbersome, so start by implementing websockets across the whole app from this point on
 
 ### End of Version 2.0.2 Changelog
 
 ---
+
+### Version 2.0.3
+
+**Implemented:**  
+- Change to long polling in JavaScript.  
+- Removed pickle usage for server to improve speed.  
+- Implemented stop and start functionality from `server_process.py` HTML, all the way back to the PC
+- Added TLS encryption to sockets.  
+- Made both TLS and Plain modes available on same socket automatically.  
+- Made VPS viewing FPS independent from local viewing FPS.  
+- Made refreshing the webpage re-update the HTML with `reloadCheck_checkClientStatus`.  
+- Implemented `threading.Event` logic for `/client_status` response trigger, improving responsiveness and code clarity.  
+- Improved logic of `generate_frames()`, added new error placeholders for certain states.  
+- Implemented `MSG_PEEK` socket flag usage to monitor socket connection state more robustly. 
+
+**Scrapped:**  
+- No new scrapped items in this version.
+
+**Detailed changes:**  
+- 
+
+---
+
+**To Run:**  
+1. Run the GUI, click **"Show Camera Stream"** to start `manage_camera.py`.  
+2. Open the web app at [http://146.190.96.130:1705/](http://146.190.96.130:1705/) and wait for the **"Desktop Connected"** message.  
+3. Click **"Start"** on the webpage to view the desktop stream in the browser.
+
+*To run locally:*  
+- Adjust `"server_host"` in `manage_camera.py` to `127.0.0.1`.  
+- Run `server_process.py`.  
+- Open the web app at [http://127.0.0.1:1705/](http://127.0.0.1:1705/).
+
+---
+
+**Notes:**  
+- The project is now transitioning from raw TCP sockets to WebSocket-based signaling
+- Although it was valuable to operate at a low level and learn by dealing with raw TCP sockets, it’s now time to move to WebSockets.
+- Transitioning to WebSocket-based signaling will simplify communication by removing manual socket listening, blocking, and  manual byte reassembly.
+- This change lays the foundation for implementing WebRTC peer-to-peer streaming with NAT traversal.
+- The WebRTC implementation will include equivalent signaling and setup code on the PC app and VPS backend, plus a new browser page (e.g., /directView ?) for direct P2P connections.
+
+---
+
+#### Next Steps / TO DO (Version 2.0.3)
+
+**Major:**  
+- Switch backend signaling (PC ↔ VPS) from raw TCP to WebSocket to stop dealing with raw TCP framing and blocking socket calls.  
+- Implement WebRTC peer-to-peer streaming for NAT traversal and direct media transfer.  
+- Build equivalent WebSocket signaling code in PC app and VPS backend.  
+- Add a new direct P2P browser page (`/directView`) to connect to PC app via WebRTC with VPS signaling.  
+
+---
+
+### End of Version 2.0.3 Changelog

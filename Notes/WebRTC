@@ -1,0 +1,58 @@
+1. PC App (Python)
+Captures or loads video frames.
+
+Uses aiortc (or similar) to stream WebRTC video.
+
+Connects to signaling server on the VPS to:
+
+Send SDP offer
+
+Receive SDP answer
+
+Exchange ICE candidates
+
+2. VPS (Server)
+Serves the HTML/JS via HTTP/HTTPS (e.g., with Nginx, Flask, etc.).
+
+Runs the signaling server (e.g., WebSocket using websockets, aiohttp, or Node.js).
+
+Relays signaling messages between:
+
+Python app on the PC
+
+Browser client
+
+3. Browser
+Loads HTML/JS from VPS.
+
+Connects to signaling server on the VPS.
+
+Receives SDP offer, responds with answer, exchanges ICE.
+
+Establishes direct WebRTC connection to the PC.
+
+Plays the incoming video stream.
+
+🔁 Flow Overview
+Browser opens HTML → connects to VPS signaling.
+
+Python app connects to same signaling server.
+
+Python sends offer → signaling relays to browser.
+
+Browser responds with answer → signaling relays back.
+
+Both exchange ICE candidates.
+
+WebRTC connection is made directly between PC ↔ browser.
+
+Stream starts — VPS is out of the media path.
+
+
+VPS = Control + coordination
+
+PC = Media source
+
+Browser = Viewer
+
+Media flows peer-to-peer, minimizing latency and load on VPS

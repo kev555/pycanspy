@@ -426,6 +426,10 @@ def set_pc_connection_state(value):
 # Future calls to event.wait() will block again, until set() is called once more.
 # Think of clear() as silencing the bell so the next listener will wait until it's rung again.
 
+# tldr:
+# .sets only job is to unblock a wait
+# .clears job is to reset a wait
+
 @app.route('/client_status_reloadCheck')
 def client_status_reloadCheck():
     global is_pc_connected
